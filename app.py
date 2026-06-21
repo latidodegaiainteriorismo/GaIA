@@ -7,7 +7,7 @@ import google.generativeai as genai
 import requests
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, origins=["https://ga-ia-frontend.vercel.app", "http://localhost:3000"])
 
 # --- VARIABLES DE ENTORNO (configurar en Render) ---
 GEMINI_API_KEY     = os.environ.get('GEMINI_API_KEY', '')

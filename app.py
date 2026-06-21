@@ -3,7 +3,8 @@ import base64
 from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 import requests
 
 app = Flask(__name__)

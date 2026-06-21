@@ -19,7 +19,7 @@ SUPABASE_KEY       = os.environ.get('SUPABASE_KEY', '')
 
 # --- INICIALIZAR CLIENTES ---
 if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+    client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 supabase = None
 if SUPABASE_URL and SUPABASE_KEY:
@@ -114,22 +114,18 @@ def save_message(session_id, role, content):
 
 def call_gemini(session_id, user_message):
     history = get_history(session_id)
-
-    model = genai.GenerativeModel(
-        model_name='gemini-2.0-flash',
-        system_instruction=GAIA_SYSTEM_PROMPT
+    contents = []
+    for msg in history:
+        role = 'user' if msg['role'] == 'user' else 'model'
+        contents.append({'role': role, 'parts': [{'text': msg['content']}]})
+    contents.append({'role': 'user', 'parts': [{'text': user_message}]})
+    response = client.models.generate_content(
+        model='gemini-2.0-flash',
+        contents=contents,
+        config=types.GenerateContentConfig(
+            system_instruction=GAIA_SYSTEM_PROMPT
+        )
     )
-
-    gemini_history = [
-        {
-            'role': 'user' if m['role'] == 'user' else 'model',
-            'parts': [m['content']]
-        }
-        for m in history
-    ]
-
-    chat = model.start_chat(history=gemini_history)
-    response = chat.send_message(user_message)
     return response.text
 
 def text_to_speech(text):

@@ -1,7 +1,7 @@
-Flask==2.3.0
-flask-cors==4.0.0
-groq==0.4.0
-requests==2.31.0
-gunicorn==21.2.0
-google-auth==2.25.2
-psycopg2-binary==2.9.9
+Flask
+flask-cors
+groq
+requests
+gunicorn
+google-auth
+psycopg2-binary

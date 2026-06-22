@@ -2,5 +2,5 @@ flask
 flask-cors
 groq
 requests
-supabase
 gunicorn
+google-auth

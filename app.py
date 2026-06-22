@@ -224,10 +224,13 @@ def text_to_speech(text):
                      'xi-api-key': ELEVENLABS_API_KEY},
             timeout=30
         )
-        return base64.b64encode(resp.content).decode() if resp.status_code == 200 else None
+        print(f'[ElevenLabs] status={resp.status_code}')
+        if resp.status_code != 200:
+            print(f'[ElevenLabs error] {resp.text}')
+            return None
+        return base64.b64encode(resp.content).decode()
     except Exception as e:
         print(f'[TTS] {e}'); return None
-
 # ── CONVERSACIONES ────────────────────────────────────────────────────────────
 @app.route('/conversations', methods=['GET'])
 @require_auth

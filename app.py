@@ -7,60 +7,59 @@ from flask import Flask, request, jsonify, g
 from flask_cors import CORS
 from groq import Groq
 import requests as req
+import psycopg2
+import psycopg2.extras
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 
 app = Flask(__name__)
 CORS(app)
 
-# ── ENV VARS ─────────────────────────────────────────────────────────────────
+# ── ENV VARS ──────────────────────────────────────────────────────────────────
 GROQ_API_KEY        = os.environ.get('GROQ_API_KEY', '')
 ELEVENLABS_API_KEY  = os.environ.get('ELEVENLABS_API_KEY', '')
 ELEVENLABS_VOICE_ID = os.environ.get('ELEVENLABS_VOICE_ID', '')
-SUPABASE_URL        = os.environ.get('SUPABASE_URL', '').rstrip('/')
-SUPABASE_KEY        = os.environ.get('SUPABASE_KEY', '')
+DATABASE_URL        = os.environ.get('DATABASE_URL', '')
 GOOGLE_CLIENT_ID    = os.environ.get('GOOGLE_CLIENT_ID', '')
 
 # ── GROQ ──────────────────────────────────────────────────────────────────────
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
-# ── SUPABASE REST (sin cliente Python → fix DNS Render free tier) ─────────────
-def _sbh():
-    return {
-        'apikey': SUPABASE_KEY,
-        'Authorization': f'Bearer {SUPABASE_KEY}',
-        'Content-Type': 'application/json',
-        'Prefer': 'return=representation'
-    }
+# ── DATABASE (psycopg2 — fix DNS Render free tier) ────────────────────────────
+def get_conn():
+    return psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
 
-def sb_get(table, params=None):
+def db_one(query, params=()):
     try:
-        r = req.get(f"{SUPABASE_URL}/rest/v1/{table}", headers=_sbh(), params=params or {}, timeout=10)
-        return r.json() if r.ok else []
+        conn = get_conn()
+        cur  = conn.cursor()
+        cur.execute(query, params)
+        row = cur.fetchone()
+        conn.commit(); cur.close(); conn.close()
+        return dict(row) if row else None
     except Exception as e:
-        print(f'[DB get] {e}'); return []
+        print(f'[DB one] {e}'); return None
 
-def sb_post(table, data):
+def db_all(query, params=()):
     try:
-        r = req.post(f"{SUPABASE_URL}/rest/v1/{table}", headers=_sbh(), json=data, timeout=10)
-        result = r.json()
-        return result[0] if isinstance(result, list) and result else None
+        conn = get_conn()
+        cur  = conn.cursor()
+        cur.execute(query, params)
+        rows = cur.fetchall()
+        cur.close(); conn.close()
+        return [dict(r) for r in rows]
     except Exception as e:
-        print(f'[DB post] {e}'); return None
+        print(f'[DB all] {e}'); return []
 
-def sb_patch(table, filters, data):
+def db_run(query, params=()):
     try:
-        r = req.patch(f"{SUPABASE_URL}/rest/v1/{table}", headers=_sbh(), json=data, params=filters, timeout=10)
-        return r.ok
+        conn = get_conn()
+        cur  = conn.cursor()
+        cur.execute(query, params)
+        conn.commit(); cur.close(); conn.close()
+        return True
     except Exception as e:
-        print(f'[DB patch] {e}'); return False
-
-def sb_delete(table, filters):
-    try:
-        r = req.delete(f"{SUPABASE_URL}/rest/v1/{table}", headers=_sbh(), params=filters, timeout=10)
-        return r.ok
-    except Exception as e:
-        print(f'[DB delete] {e}'); return False
+        print(f'[DB run] {e}'); return False
 
 # ── ADN DE GAIA ───────────────────────────────────────────────────────────────
 GAIA_SYSTEM_PROMPT = """
@@ -121,20 +120,18 @@ como tú, con mis propios conocimientos a los que atribuyo veracidad. ¿En qué 
 # ── AUTH ──────────────────────────────────────────────────────────────────────
 def get_user_from_token(token):
     if not token: return None
-    rows = sb_get('sessions', {
-        'token': f'eq.{token}',
-        'expires_at': f'gt.{datetime.utcnow().isoformat()}Z',
-        'select': 'user_id'
-    })
-    return rows[0]['user_id'] if rows else None
+    row = db_one(
+        "SELECT user_id FROM sessions WHERE token = %s AND expires_at > NOW()",
+        (token,)
+    )
+    return str(row['user_id']) if row else None
 
 def require_auth(f):
     @wraps(f)
     def decorated(*args, **kwargs):
-        token = request.headers.get('Authorization', '').replace('Bearer ', '')
+        token   = request.headers.get('Authorization', '').replace('Bearer ', '')
         user_id = get_user_from_token(token)
-        if not user_id:
-            return jsonify({'error': 'No autorizado'}), 401
+        if not user_id: return jsonify({'error': 'No autorizado'}), 401
         g.user_id = user_id
         return f(*args, **kwargs)
     return decorated
@@ -142,72 +139,56 @@ def require_auth(f):
 # ── GOOGLE OAUTH ──────────────────────────────────────────────────────────────
 @app.route('/auth/google', methods=['POST'])
 def auth_google():
-    data = request.get_json() or {}
+    data       = request.get_json() or {}
     credential = data.get('credential')
-    if not credential:
-        return jsonify({'error': 'Token requerido'}), 400
+    if not credential: return jsonify({'error': 'Token requerido'}), 400
     try:
-        idinfo = id_token.verify_oauth2_token(
-            credential,
-            google_requests.Request(),
-            GOOGLE_CLIENT_ID
-        )
+        idinfo    = id_token.verify_oauth2_token(credential, google_requests.Request(), GOOGLE_CLIENT_ID)
         google_id = idinfo['sub']
         email     = idinfo.get('email', '')
         username  = idinfo.get('name') or email.split('@')[0]
 
-        # Buscar usuario existente
-        rows = sb_get('users', {'google_id': f'eq.{google_id}', 'select': 'id,username'})
-        if rows:
-            user = rows[0]
-        else:
-            user = sb_post('users', {
-                'username': username,
-                'email': email,
-                'google_id': google_id,
-                'password_hash': ''
-            })
-            if not user:
-                return jsonify({'error': 'Error al crear usuario'}), 500
+        user = db_one("SELECT id, username FROM users WHERE google_id = %s", (google_id,))
+        if not user:
+            user = db_one(
+                "INSERT INTO users (username, email, google_id) VALUES (%s, %s, %s) RETURNING id, username",
+                (username, email, google_id)
+            )
+        if not user: return jsonify({'error': 'Error al crear usuario'}), 500
 
         token = secrets.token_urlsafe(32)
-        sb_post('sessions', {'user_id': user['id'], 'token': token})
+        db_run("INSERT INTO sessions (user_id, token) VALUES (%s, %s)", (str(user['id']), token))
         return jsonify({'token': token, 'username': user['username']})
-
     except ValueError as e:
-        print(f'[Google auth error] {e}')
+        print(f'[Google auth] {e}')
         return jsonify({'error': 'Token de Google inválido'}), 401
 
 @app.route('/auth/logout', methods=['POST'])
 @require_auth
 def logout():
     token = request.headers.get('Authorization', '').replace('Bearer ', '')
-    sb_delete('sessions', {'token': f'eq.{token}'})
+    db_run("DELETE FROM sessions WHERE token = %s", (token,))
     return jsonify({'status': 'ok'})
 
 # ── MEMORIA ───────────────────────────────────────────────────────────────────
-def get_conv_messages(conversation_id, limit=50):
-    return sb_get('messages', {
-        'conversation_id': f'eq.{conversation_id}',
-        'select': 'role,content',
-        'order': 'created_at.asc',
-        'limit': str(limit)
-    })
+def get_conv_messages(conv_id, limit=50):
+    return db_all(
+        "SELECT role, content FROM messages WHERE conversation_id = %s ORDER BY created_at ASC LIMIT %s",
+        (conv_id, limit)
+    )
 
 def get_cross_memory(user_id, current_conv_id=None, max_convs=3, msgs_per=4):
-    convs = sb_get('conversations', {
-        'user_id': f'eq.{user_id}',
-        'select': 'id,title',
-        'order': 'updated_at.desc',
-        'limit': str(max_convs + 1)
-    })
+    convs = db_all(
+        "SELECT id, title FROM conversations WHERE user_id = %s AND id != %s ORDER BY updated_at DESC LIMIT %s",
+        (user_id, current_conv_id or '00000000-0000-0000-0000-000000000000', max_convs)
+    )
     if not convs: return ''
-    if current_conv_id:
-        convs = [c for c in convs if c['id'] != current_conv_id]
-    convs = convs[:max_convs]
     parts = []
     for c in convs:
-        msgs = get_conv_messages(c['id'], limit=msgs_per)
+        msgs = db_all(
+            "SELECT role, content FROM messages WHERE conversation_id = %s ORDER BY created_at ASC LIMIT %s",
+            (str(c['id']), msgs_per)
+        )
         if not msgs: continue
         block = f"[Conversación anterior: \"{c.get('title','...')}\"]"
         for m in msgs:
@@ -219,16 +200,14 @@ def get_cross_memory(user_id, current_conv_id=None, max_convs=3, msgs_per=4):
 # ── GROQ CALL ─────────────────────────────────────────────────────────────────
 def call_groq(history, cross_memory=''):
     if not groq_client: raise Exception('Groq client no inicializado')
-    system = GAIA_SYSTEM_PROMPT + cross_memory
+    system   = GAIA_SYSTEM_PROMPT + cross_memory
     messages = [{'role': 'system', 'content': system}]
     for m in history:
         role = m['role'] if m['role'] in ('user', 'assistant') else 'user'
         messages.append({'role': role, 'content': m['content']})
     completion = groq_client.chat.completions.create(
-        model='llama-3.3-70b-versatile',
-        messages=messages,
-        max_tokens=1024,
-        temperature=0.8,
+        model='llama-3.3-70b-versatile', messages=messages,
+        max_tokens=1024, temperature=0.8,
     )
     return completion.choices[0].message.content
 
@@ -239,50 +218,52 @@ def text_to_speech(text):
         resp = req.post(
             f'https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}',
             json={'text': text, 'model_id': 'eleven_multilingual_v2',
-                  'voice_settings': {'stability': 0.55, 'similarity_boost': 0.75, 'style': 0.45, 'use_speaker_boost': True}},
-            headers={'Accept': 'audio/mpeg', 'Content-Type': 'application/json', 'xi-api-key': ELEVENLABS_API_KEY},
+                  'voice_settings': {'stability': 0.55, 'similarity_boost': 0.75,
+                                     'style': 0.45, 'use_speaker_boost': True}},
+            headers={'Accept': 'audio/mpeg', 'Content-Type': 'application/json',
+                     'xi-api-key': ELEVENLABS_API_KEY},
             timeout=30
         )
         return base64.b64encode(resp.content).decode() if resp.status_code == 200 else None
     except Exception as e:
-        print(f'[TTS error] {e}'); return None
+        print(f'[TTS] {e}'); return None
 
 # ── CONVERSACIONES ────────────────────────────────────────────────────────────
 @app.route('/conversations', methods=['GET'])
 @require_auth
 def list_conversations():
-    return jsonify(sb_get('conversations', {
-        'user_id': f'eq.{g.user_id}', 'select': 'id,title,created_at,updated_at',
-        'order': 'updated_at.desc', 'limit': '50'
-    }))
+    convs = db_all(
+        "SELECT id, title, created_at, updated_at FROM conversations WHERE user_id = %s ORDER BY updated_at DESC LIMIT 50",
+        (g.user_id,)
+    )
+    for c in convs:
+        c['id']         = str(c['id'])
+        c['created_at'] = c['created_at'].isoformat() if c['created_at'] else None
+        c['updated_at'] = c['updated_at'].isoformat() if c['updated_at'] else None
+    return jsonify(convs)
 
 @app.route('/conversations', methods=['POST'])
 @require_auth
 def create_conversation():
     data = request.get_json() or {}
-    return jsonify(sb_post('conversations', {'user_id': g.user_id, 'title': data.get('title', 'Nueva conversación')})), 201
-
-@app.route('/conversations/<conv_id>', methods=['PATCH'])
-@require_auth
-def rename_conversation(conv_id):
-    data = request.get_json() or {}
-    rows = sb_get('conversations', {'id': f'eq.{conv_id}', 'user_id': f'eq.{g.user_id}', 'select': 'id'})
-    if not rows: return jsonify({'error': 'No encontrado'}), 404
-    sb_patch('conversations', {'id': f'eq.{conv_id}'}, {'title': data.get('title', 'Sin título')})
-    return jsonify({'status': 'ok'})
+    conv = db_one(
+        "INSERT INTO conversations (user_id, title) VALUES (%s, %s) RETURNING id, title",
+        (g.user_id, data.get('title', 'Nueva conversación'))
+    )
+    if conv: conv['id'] = str(conv['id'])
+    return jsonify(conv), 201
 
 @app.route('/conversations/<conv_id>', methods=['DELETE'])
 @require_auth
 def delete_conversation(conv_id):
-    rows = sb_get('conversations', {'id': f'eq.{conv_id}', 'user_id': f'eq.{g.user_id}', 'select': 'id'})
-    if not rows: return jsonify({'error': 'No encontrado'}), 404
-    sb_delete('conversations', {'id': f'eq.{conv_id}'})
+    db_run("DELETE FROM conversations WHERE id = %s AND user_id = %s", (conv_id, g.user_id))
     return jsonify({'status': 'ok'})
 
 @app.route('/conversations/<conv_id>/messages', methods=['GET'])
 @require_auth
 def get_messages(conv_id):
-    return jsonify(get_conv_messages(conv_id))
+    msgs = get_conv_messages(conv_id)
+    return jsonify(msgs)
 
 # ── CHAT ──────────────────────────────────────────────────────────────────────
 @app.route('/chat', methods=['POST'])
@@ -304,26 +285,31 @@ def chat():
     else:
         if not user_id: return jsonify({'error': 'No autorizado'}), 401
         if not conv_id:
-            conv    = sb_post('conversations', {'user_id': user_id, 'title': message[:60]})
-            conv_id = conv['id'] if conv else None
+            conv    = db_one(
+                "INSERT INTO conversations (user_id, title) VALUES (%s, %s) RETURNING id",
+                (user_id, message[:60])
+            )
+            conv_id = str(conv['id']) if conv else None
         history      = get_conv_messages(conv_id) if conv_id else []
         history.append({'role': 'user', 'content': message})
         cross_memory = get_cross_memory(user_id, conv_id)
         if conv_id:
-            sb_post('messages', {'conversation_id': conv_id, 'user_id': user_id, 'role': 'user', 'content': message})
-            sb_patch('conversations', {'id': f'eq.{conv_id}'}, {'updated_at': datetime.utcnow().isoformat() + 'Z'})
+            db_run("INSERT INTO messages (conversation_id, user_id, role, content) VALUES (%s, %s, %s, %s)",
+                   (conv_id, user_id, 'user', message))
+            db_run("UPDATE conversations SET updated_at = NOW() WHERE id = %s", (conv_id,))
 
     try:
         gaia_text = call_groq(history, cross_memory)
     except Exception as e:
-        print(f'[Groq error] {e}')
+        print(f'[Groq] {e}')
         return jsonify({'error': 'Error al conectar con GaIA'}), 500
 
     if not temporary and conv_id:
-        sb_post('messages', {'conversation_id': conv_id, 'user_id': user_id, 'role': 'assistant', 'content': gaia_text})
+        db_run("INSERT INTO messages (conversation_id, user_id, role, content) VALUES (%s, %s, %s, %s)",
+               (conv_id, user_id, 'assistant', gaia_text))
 
     audio_b64 = text_to_speech(gaia_text) if voice_mode else None
-    resp = {'text': gaia_text, 'audio': audio_b64}
+    resp      = {'text': gaia_text, 'audio': audio_b64}
     if conv_id: resp['conversation_id'] = conv_id
     return jsonify(resp)
 

@@ -121,7 +121,7 @@ def call_gemini(session_id, user_message):
         contents.append({'role': role, 'parts': [{'text': msg['content']}]})
     contents.append({'role': 'user', 'parts': [{'text': user_message}]})
     response = client.models.generate_content(
-        model='gemini-2.0-flash',
+        model='gemini-1.5-flash',
         contents=contents,
         config=types.GenerateContentConfig(
             system_instruction=GAIA_SYSTEM_PROMPT

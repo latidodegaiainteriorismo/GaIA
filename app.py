@@ -3,22 +3,21 @@ import base64
 from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from google import genai
-from google.genai import types
+from groq import Groq
 import requests
 
 app = Flask(__name__)
 CORS(app)
 
 # --- VARIABLES DE ENTORNO (configurar en Render) ---
-GEMINI_API_KEY     = os.environ.get('GEMINI_API_KEY', '')
+GROQ_API_KEY       = os.environ.get('GROQ_API_KEY', '')
 ELEVENLABS_API_KEY = os.environ.get('ELEVENLABS_API_KEY', '')
 ELEVENLABS_VOICE_ID= os.environ.get('ELEVENLABS_VOICE_ID', '')
 SUPABASE_URL       = os.environ.get('SUPABASE_URL', '')
 SUPABASE_KEY       = os.environ.get('SUPABASE_KEY', '')
 
 # --- INICIALIZAR CLIENTES ---
-client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 supabase = None
 if SUPABASE_URL and SUPABASE_KEY:
@@ -111,23 +110,22 @@ def save_message(session_id, role, content):
     except Exception as e:
         print(f'[Save error] {e}')
 
-def call_gemini(session_id, user_message):
-    if not client:
-        raise Exception("Gemini client no inicializado")
+def call_groq(session_id, user_message):
+    if not groq_client:
+        raise Exception("Groq client no inicializado")
     history = get_history(session_id)
-    contents = []
+    messages = [{"role": "system", "content": GAIA_SYSTEM_PROMPT}]
     for msg in history:
-        role = 'user' if msg['role'] == 'user' else 'model'
-        contents.append({'role': role, 'parts': [{'text': msg['content']}]})
-    contents.append({'role': 'user', 'parts': [{'text': user_message}]})
-    response = client.models.generate_content(
-        model = "gemini-2.0-flash-lite",
-        contents=contents,
-        config=types.GenerateContentConfig(
-            system_instruction=GAIA_SYSTEM_PROMPT
-        )
+        role = msg['role'] if msg['role'] in ('user', 'assistant') else 'user'
+        messages.append({"role": role, "content": msg['content']})
+    messages.append({"role": "user", "content": user_message})
+    completion = groq_client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=messages,
+        max_tokens=1024,
+        temperature=0.8,
     )
-    return response.text
+    return completion.choices[0].message.content
 
 def text_to_speech(text):
     if not ELEVENLABS_API_KEY or not ELEVENLABS_VOICE_ID:
@@ -181,9 +179,9 @@ def chat():
     save_message(session_id, 'user', message)
 
     try:
-        gaia_text = call_gemini(session_id, message)
+        gaia_text = call_groq(session_id, message)
     except Exception as e:
-        print(f'[Gemini error] {e}')
+        print(f'[Groq error] {e}')
         return jsonify({'error': 'Error al conectar con GaIA'}), 500
 
     save_message(session_id, 'assistant', gaia_text)

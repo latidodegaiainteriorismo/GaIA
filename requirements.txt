@@ -5,3 +5,4 @@ requests
 gunicorn
 google-auth
 psycopg2-binary
+edge-tts

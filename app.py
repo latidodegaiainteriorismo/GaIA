@@ -1,13 +1,15 @@
 import os
+import re
 import base64
 import secrets
 import logging
+import asyncio
 from datetime import datetime
 from functools import wraps
 from flask import Flask, request, jsonify, g
 from flask_cors import CORS
 from groq import Groq
-import requests as req
+import edge_tts
 import psycopg2
 import psycopg2.extras
 from google.oauth2 import id_token
@@ -24,11 +26,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ── ENV VARS ──────────────────────────────────────────────────────────────────
-GROQ_API_KEY        = os.environ.get('GROQ_API_KEY', '')
-ELEVENLABS_API_KEY  = os.environ.get('ELEVENLABS_API_KEY', '')
-ELEVENLABS_VOICE_ID = os.environ.get('ELEVENLABS_VOICE_ID', '')
-DATABASE_URL        = os.environ.get('DATABASE_URL', '')
-GOOGLE_CLIENT_ID    = os.environ.get('GOOGLE_CLIENT_ID', '')
+GROQ_API_KEY     = os.environ.get('GROQ_API_KEY', '')
+DATABASE_URL     = os.environ.get('DATABASE_URL', '')
+GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')
+
+# Voz edge-tts: configurable vía env var, por defecto Elvira (España, femenina)
+EDGE_TTS_VOICE = os.environ.get('EDGE_TTS_VOICE', 'es-ES-ElviraNeural')
 
 # ── GROQ ──────────────────────────────────────────────────────────────────────
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
@@ -224,121 +227,56 @@ def call_groq(history, cross_memory=''):
     )
     return completion.choices[0].message.content
 
-# ── TTS ───────────────────────────────────────────────────────────────────────
-def _tts_single_chunk(text):
+# ── TTS (Edge TTS — gratuito, sin API key, voz española femenina) ─────────────
+async def _edge_tts_generate(text: str) -> bytes:
+    """Genera audio MP3 con Microsoft Edge TTS de forma asíncrona."""
+    communicate = edge_tts.Communicate(text, EDGE_TTS_VOICE)
+    audio_chunks = []
+    async for chunk in communicate.stream():
+        if chunk['type'] == 'audio':
+            audio_chunks.append(chunk['data'])
+    return b''.join(audio_chunks)
+
+
+def text_to_speech(text: str):
     """
-    Llama a la API de ElevenLabs para un fragmento de texto.
-    Devuelve bytes de audio (MP3) o None si falla.
+    Convierte texto a audio MP3 en base64 usando Microsoft Edge TTS.
+
+    - Motor: edge-tts (Microsoft Edge Neural TTS)
+    - Voz por defecto: es-ES-ElviraNeural (castellano España, femenina)
+    - Configurable vía env var EDGE_TTS_VOICE
+    - Sin API key, sin coste, sin límites de rate
+    - Soporta textos largos sin fragmentación (no hay límite de caracteres)
     """
-    try:
-        resp = req.post(
-            f'https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}',
-            json={
-                'text': text,
-                'model_id': 'eleven_flash_v2_5',
-                'voice_settings': {
-                    'stability': 0.5,
-                    'similarity_boost': 0.75,
-                    'style': 0.0,
-                    'use_speaker_boost': False
-                }
-            },
-            headers={
-                'Accept': 'audio/mpeg',
-                'Content-Type': 'application/json',
-                'xi-api-key': ELEVENLABS_API_KEY
-            },
-            timeout=60
-        )
-
-        logger.info(f'[TTS] status={resp.status_code} bytes={len(resp.content)}')
-
-        if resp.status_code == 200:
-            return resp.content  # bytes crudos
-        else:
-            logger.error(f'[TTS] Error HTTP {resp.status_code}: {resp.text[:300]}')
-            return None
-
-    except req.exceptions.Timeout:
-        logger.error('[TTS] Timeout (60s) — API down o red lenta')
-        return None
-    except req.exceptions.ConnectionError as e:
-        logger.error(f'[TTS] Error de conexión: {str(e)[:200]}')
-        return None
-    except Exception as e:
-        logger.error(f'[TTS] Error inesperado ({type(e).__name__}): {str(e)[:200]}')
-        return None
-
-
-def text_to_speech(text):
-    """
-    Convierte texto a audio MP3 en base64.
-
-    - Modelo: eleven_flash_v2_5 (75-150ms, 40K chars/request)
-    - Si el texto supera MAX_CHARS, fragmenta por oraciones completas,
-      concatena los bytes MP3 crudos y devuelve un único base64 válido.
-    - Logging detallado en cada paso para diagnosticar fallos silenciosos.
-    """
-    if not ELEVENLABS_API_KEY or not ELEVENLABS_VOICE_ID:
-        logger.warning('[TTS] Credenciales no configuradas — saltando TTS')
-        return None
-
     text = (text or '').strip()
     if not text:
         logger.warning('[TTS] Texto vacío')
         return None
 
-    MAX_CHARS = 4000  # Límite seguro; el modelo soporta 40K pero así evitamos payloads grandes
+    # Limpiar markdown que edge-tts leería literalmente (**, *, #, etc.)
+    text_clean = re.sub(r'[*#`_~]', '', text)
+    text_clean = re.sub(r'\n{2,}', ' ', text_clean).strip()
 
-    if len(text) <= MAX_CHARS:
-        # Caso habitual: texto corto, una sola llamada
-        logger.info(f'[TTS] Enviando {len(text)} chars a eleven_flash_v2_5')
-        audio_bytes = _tts_single_chunk(text)
+    try:
+        logger.info(f'[TTS] Edge TTS: {len(text_clean)} chars | voz={EDGE_TTS_VOICE}')
+
+        # Crear un event loop nuevo y aislado para no interferir con Flask
+        loop = asyncio.new_event_loop()
+        try:
+            audio_bytes = loop.run_until_complete(_edge_tts_generate(text_clean))
+        finally:
+            loop.close()
+
         if not audio_bytes:
+            logger.error('[TTS] Edge TTS devolvió audio vacío')
             return None
+
+        logger.info(f'[TTS] ✅ Audio generado: {len(audio_bytes)} bytes')
         return base64.b64encode(audio_bytes).decode('utf-8')
 
-    # Texto largo: fragmentar respetando oraciones para que no corte palabras
-    logger.info(f'[TTS] Texto largo ({len(text)} chars), fragmentando...')
-
-    # Dividir en oraciones (por '. ', '? ', '! ', '\n')
-    import re
-    sentences = re.split(r'(?<=[.?!\n])\s+', text)
-
-    chunks     = []
-    current    = ''
-    for sentence in sentences:
-        if len(current) + len(sentence) + 1 <= MAX_CHARS:
-            current = (current + ' ' + sentence).strip()
-        else:
-            if current:
-                chunks.append(current)
-            # Si una sola oración es mayor que MAX_CHARS, córtala por caracteres
-            if len(sentence) > MAX_CHARS:
-                for i in range(0, len(sentence), MAX_CHARS):
-                    chunks.append(sentence[i:i + MAX_CHARS])
-            else:
-                current = sentence
-    if current:
-        chunks.append(current)
-
-    logger.info(f'[TTS] {len(chunks)} fragmentos a procesar')
-
-    # Llamar a la API por cada fragmento y acumular bytes MP3 crudos
-    raw_audio_parts = []
-    for i, chunk in enumerate(chunks):
-        logger.info(f'[TTS] Fragmento {i + 1}/{len(chunks)} ({len(chunk)} chars)')
-        audio_bytes = _tts_single_chunk(chunk)
-        if not audio_bytes:
-            logger.error(f'[TTS] Fallo en fragmento {i + 1} — abortando TTS')
-            return None
-        raw_audio_parts.append(audio_bytes)
-
-    # Concatenar bytes MP3 y codificar a base64 UNA SOLA VEZ
-    # (concatenar strings base64 produce audio inválido — bug común)
-    combined_bytes = b''.join(raw_audio_parts)
-    logger.info(f'[TTS] ✅ Audio completo: {len(combined_bytes)} bytes de {len(chunks)} fragmentos')
-    return base64.b64encode(combined_bytes).decode('utf-8')
+    except Exception as e:
+        logger.error(f'[TTS] ❌ Error edge-tts ({type(e).__name__}): {str(e)[:300]}')
+        return None
 
 # ── CONVERSACIONES ────────────────────────────────────────────────────────────
 @app.route('/conversations', methods=['GET'])
@@ -449,5 +387,5 @@ def health():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    logger.info(f'🌍 GaIA arrancando en puerto {port}')
+    logger.info(f'🌍 GaIA arrancando en puerto {port} | voz={EDGE_TTS_VOICE}')
     app.run(host='0.0.0.0', port=port, debug=False)

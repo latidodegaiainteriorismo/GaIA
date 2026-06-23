@@ -1,6 +1,7 @@
 import os
 import base64
 import secrets
+import logging
 from datetime import datetime
 from functools import wraps
 from flask import Flask, request, jsonify, g
@@ -14,6 +15,13 @@ from google.auth.transport import requests as google_requests
 
 app = Flask(__name__)
 CORS(app)
+
+# ── LOGGING ───────────────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] %(levelname)s %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # ── ENV VARS ──────────────────────────────────────────────────────────────────
 GROQ_API_KEY        = os.environ.get('GROQ_API_KEY', '')
@@ -34,11 +42,12 @@ def db_one(query, params=()):
         conn = get_conn()
         cur  = conn.cursor()
         cur.execute(query, params)
-        row = cur.fetchone()
+        row  = cur.fetchone()
         conn.commit(); cur.close(); conn.close()
         return dict(row) if row else None
     except Exception as e:
-        print(f'[DB one] {e}'); return None
+        logger.error(f'[DB one] {e}')
+        return None
 
 def db_all(query, params=()):
     try:
@@ -49,7 +58,8 @@ def db_all(query, params=()):
         cur.close(); conn.close()
         return [dict(r) for r in rows]
     except Exception as e:
-        print(f'[DB all] {e}'); return []
+        logger.error(f'[DB all] {e}')
+        return []
 
 def db_run(query, params=()):
     try:
@@ -59,7 +69,8 @@ def db_run(query, params=()):
         conn.commit(); cur.close(); conn.close()
         return True
     except Exception as e:
-        print(f'[DB run] {e}'); return False
+        logger.error(f'[DB run] {e}')
+        return False
 
 # ── ADN DE GAIA ───────────────────────────────────────────────────────────────
 GAIA_SYSTEM_PROMPT = """
@@ -160,7 +171,7 @@ def auth_google():
         db_run("INSERT INTO sessions (user_id, token) VALUES (%s, %s)", (str(user['id']), token))
         return jsonify({'token': token, 'username': user['username']})
     except ValueError as e:
-        print(f'[Google auth] {e}')
+        logger.error(f'[Google auth] {e}')
         return jsonify({'error': 'Token de Google inválido'}), 401
 
 @app.route('/auth/logout', methods=['POST'])
@@ -190,9 +201,9 @@ def get_cross_memory(user_id, current_conv_id=None, max_convs=3, msgs_per=4):
             (str(c['id']), msgs_per)
         )
         if not msgs: continue
-        block = f"[Conversación anterior: \"{c.get('title','...')}\"]"
+        block = f"[Conversación anterior: \"{c.get('title', '...')}\"]"
         for m in msgs:
-            block += f"\n{'Usuario' if m['role']=='user' else 'GaIA'}: {m['content']}"
+            block += f"\n{'Usuario' if m['role'] == 'user' else 'GaIA'}: {m['content']}"
         parts.append(block)
     if not parts: return ''
     return '\n\n## MEMORIA DE CONVERSACIONES ANTERIORES\n' + '\n\n'.join(parts) + '\n---\n'
@@ -206,31 +217,129 @@ def call_groq(history, cross_memory=''):
         role = m['role'] if m['role'] in ('user', 'assistant') else 'user'
         messages.append({'role': role, 'content': m['content']})
     completion = groq_client.chat.completions.create(
-        model='llama-3.3-70b-versatile', messages=messages,
-        max_tokens=1024, temperature=0.8,
+        model='llama-3.3-70b-versatile',
+        messages=messages,
+        max_tokens=1024,
+        temperature=0.8,
     )
     return completion.choices[0].message.content
 
 # ── TTS ───────────────────────────────────────────────────────────────────────
-def text_to_speech(text):
-    if not ELEVENLABS_API_KEY or not ELEVENLABS_VOICE_ID: return None
+def _tts_single_chunk(text):
+    """
+    Llama a la API de ElevenLabs para un fragmento de texto.
+    Devuelve bytes de audio (MP3) o None si falla.
+    """
     try:
         resp = req.post(
             f'https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}',
-            json={'text': text, 'model_id': 'eleven_multilingual_v2',
-                  'voice_settings': {'stability': 0.55, 'similarity_boost': 0.75,
-                                     'style': 0.45, 'use_speaker_boost': True}},
-            headers={'Accept': 'audio/mpeg', 'Content-Type': 'application/json',
-                     'xi-api-key': ELEVENLABS_API_KEY},
-            timeout=30
+            json={
+                'text': text,
+                'model_id': 'eleven_flash_v2_5',
+                'voice_settings': {
+                    'stability': 0.5,
+                    'similarity_boost': 0.75,
+                    'style': 0.0,
+                    'use_speaker_boost': False
+                }
+            },
+            headers={
+                'Accept': 'audio/mpeg',
+                'Content-Type': 'application/json',
+                'xi-api-key': ELEVENLABS_API_KEY
+            },
+            timeout=60
         )
-        print(f'[ElevenLabs] status={resp.status_code}')
-        if resp.status_code != 200:
-            print(f'[ElevenLabs error] {resp.text}')
+
+        logger.info(f'[TTS] status={resp.status_code} bytes={len(resp.content)}')
+
+        if resp.status_code == 200:
+            return resp.content  # bytes crudos
+        else:
+            logger.error(f'[TTS] Error HTTP {resp.status_code}: {resp.text[:300]}')
             return None
-        return base64.b64encode(resp.content).decode()
+
+    except req.exceptions.Timeout:
+        logger.error('[TTS] Timeout (60s) — API down o red lenta')
+        return None
+    except req.exceptions.ConnectionError as e:
+        logger.error(f'[TTS] Error de conexión: {str(e)[:200]}')
+        return None
     except Exception as e:
-        print(f'[TTS] {e}'); return None
+        logger.error(f'[TTS] Error inesperado ({type(e).__name__}): {str(e)[:200]}')
+        return None
+
+
+def text_to_speech(text):
+    """
+    Convierte texto a audio MP3 en base64.
+
+    - Modelo: eleven_flash_v2_5 (75-150ms, 40K chars/request)
+    - Si el texto supera MAX_CHARS, fragmenta por oraciones completas,
+      concatena los bytes MP3 crudos y devuelve un único base64 válido.
+    - Logging detallado en cada paso para diagnosticar fallos silenciosos.
+    """
+    if not ELEVENLABS_API_KEY or not ELEVENLABS_VOICE_ID:
+        logger.warning('[TTS] Credenciales no configuradas — saltando TTS')
+        return None
+
+    text = (text or '').strip()
+    if not text:
+        logger.warning('[TTS] Texto vacío')
+        return None
+
+    MAX_CHARS = 4000  # Límite seguro; el modelo soporta 40K pero así evitamos payloads grandes
+
+    if len(text) <= MAX_CHARS:
+        # Caso habitual: texto corto, una sola llamada
+        logger.info(f'[TTS] Enviando {len(text)} chars a eleven_flash_v2_5')
+        audio_bytes = _tts_single_chunk(text)
+        if not audio_bytes:
+            return None
+        return base64.b64encode(audio_bytes).decode('utf-8')
+
+    # Texto largo: fragmentar respetando oraciones para que no corte palabras
+    logger.info(f'[TTS] Texto largo ({len(text)} chars), fragmentando...')
+
+    # Dividir en oraciones (por '. ', '? ', '! ', '\n')
+    import re
+    sentences = re.split(r'(?<=[.?!\n])\s+', text)
+
+    chunks     = []
+    current    = ''
+    for sentence in sentences:
+        if len(current) + len(sentence) + 1 <= MAX_CHARS:
+            current = (current + ' ' + sentence).strip()
+        else:
+            if current:
+                chunks.append(current)
+            # Si una sola oración es mayor que MAX_CHARS, córtala por caracteres
+            if len(sentence) > MAX_CHARS:
+                for i in range(0, len(sentence), MAX_CHARS):
+                    chunks.append(sentence[i:i + MAX_CHARS])
+            else:
+                current = sentence
+    if current:
+        chunks.append(current)
+
+    logger.info(f'[TTS] {len(chunks)} fragmentos a procesar')
+
+    # Llamar a la API por cada fragmento y acumular bytes MP3 crudos
+    raw_audio_parts = []
+    for i, chunk in enumerate(chunks):
+        logger.info(f'[TTS] Fragmento {i + 1}/{len(chunks)} ({len(chunk)} chars)')
+        audio_bytes = _tts_single_chunk(chunk)
+        if not audio_bytes:
+            logger.error(f'[TTS] Fallo en fragmento {i + 1} — abortando TTS')
+            return None
+        raw_audio_parts.append(audio_bytes)
+
+    # Concatenar bytes MP3 y codificar a base64 UNA SOLA VEZ
+    # (concatenar strings base64 produce audio inválido — bug común)
+    combined_bytes = b''.join(raw_audio_parts)
+    logger.info(f'[TTS] ✅ Audio completo: {len(combined_bytes)} bytes de {len(chunks)} fragmentos')
+    return base64.b64encode(combined_bytes).decode('utf-8')
+
 # ── CONVERSACIONES ────────────────────────────────────────────────────────────
 @app.route('/conversations', methods=['GET'])
 @require_auth
@@ -281,12 +390,15 @@ def chat():
     token      = request.headers.get('Authorization', '').replace('Bearer ', '')
     user_id    = get_user_from_token(token) if token else None
 
+    logger.info(f'[CHAT] user={user_id} conv={conv_id} voice={voice_mode} len={len(message)}')
+
     if temporary:
         history      = data.get('history', [])
         history.append({'role': 'user', 'content': message})
         cross_memory = ''
     else:
-        if not user_id: return jsonify({'error': 'No autorizado'}), 401
+        if not user_id:
+            return jsonify({'error': 'No autorizado'}), 401
         if not conv_id:
             conv    = db_one(
                 "INSERT INTO conversations (user_id, title) VALUES (%s, %s) RETURNING id",
@@ -297,23 +409,37 @@ def chat():
         history.append({'role': 'user', 'content': message})
         cross_memory = get_cross_memory(user_id, conv_id)
         if conv_id:
-            db_run("INSERT INTO messages (conversation_id, user_id, role, content) VALUES (%s, %s, %s, %s)",
-                   (conv_id, user_id, 'user', message))
+            db_run(
+                "INSERT INTO messages (conversation_id, user_id, role, content) VALUES (%s, %s, %s, %s)",
+                (conv_id, user_id, 'user', message)
+            )
             db_run("UPDATE conversations SET updated_at = NOW() WHERE id = %s", (conv_id,))
 
     try:
+        logger.info(f'[GROQ] Llamando ({len(history)} msgs en historial)')
         gaia_text = call_groq(history, cross_memory)
+        logger.info(f'[GROQ] ✅ Respuesta: {len(gaia_text)} chars')
     except Exception as e:
-        print(f'[Groq] {e}')
+        logger.error(f'[GROQ] ❌ {e}')
         return jsonify({'error': 'Error al conectar con GaIA'}), 500
 
     if not temporary and conv_id:
-        db_run("INSERT INTO messages (conversation_id, user_id, role, content) VALUES (%s, %s, %s, %s)",
-               (conv_id, user_id, 'assistant', gaia_text))
+        db_run(
+            "INSERT INTO messages (conversation_id, user_id, role, content) VALUES (%s, %s, %s, %s)",
+            (conv_id, user_id, 'assistant', gaia_text)
+        )
 
-    audio_b64 = text_to_speech(gaia_text) if voice_mode else None
-    resp      = {'text': gaia_text, 'audio': audio_b64}
-    if conv_id: resp['conversation_id'] = conv_id
+    audio_b64 = None
+    if voice_mode:
+        audio_b64 = text_to_speech(gaia_text)
+        if audio_b64:
+            logger.info('[CHAT] ✅ TTS ok')
+        else:
+            logger.warning('[CHAT] ⚠️ TTS falló — respuesta entregada sin audio')
+
+    resp = {'text': gaia_text, 'audio': audio_b64}
+    if conv_id:
+        resp['conversation_id'] = conv_id
     return jsonify(resp)
 
 # ── HEALTH ────────────────────────────────────────────────────────────────────
@@ -323,4 +449,5 @@ def health():
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
+    logger.info(f'🌍 GaIA arrancando en puerto {port}')
     app.run(host='0.0.0.0', port=port, debug=False)

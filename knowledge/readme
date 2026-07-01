@@ -1,0 +1,42 @@
+# knowledge/
+
+Aquí van los documentos que alimentan el conocimiento de GaIA.
+
+## Estructura
+
+```
+knowledge/
+├── ucdm/
+│   └── Un Curso de Milagros.txt
+├── feng-shui/
+│   ├── Modulo 1 Feng Shui.txt
+│   └── Modulo 2 Feng Shui.txt
+├── consciencia/
+│   └── La Respiracion del Universo.txt
+├── astrologia/
+│   └── nombre-del-libro.txt
+└── otro/
+    └── cualquier-cosa.txt
+```
+
+## Categorías disponibles
+- `ucdm` — Un Curso de Milagros
+- `feng-shui` — Feng Shui y espacio
+- `consciencia` — Consciencia y despertar
+- `astrologia` — Astrología
+- `biodescodificacion` — Biodescodificación
+- `meditacion` — Meditación y presencia
+- `otro` — Cualquier otro tema
+
+## Cómo añadir un libro
+
+1. Convierte el PDF a TXT (copia y pega el texto)
+2. Guarda como `knowledge/{categoría}/Título del Libro.txt`
+3. Haz commit y push a `main`
+4. GitHub Actions lo ingesta automáticamente en ~2 minutos
+
+## Cómo añadir un vídeo de YouTube
+
+1. Copia la transcripción del vídeo
+2. Guarda como `knowledge/{categoría}/Título del Video.txt`
+3. Push → ingest automático

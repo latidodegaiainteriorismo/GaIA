@@ -17,7 +17,7 @@ def get_embed_model():
         from fastembed import TextEmbedding
         logger.info('[Ingest] Cargando modelo de embeddings...')
         _embed_model = TextEmbedding(
-            model_name="intfloat/multilingual-e5-small",
+            model_name="BAAI/bge-small-multilingual-v1.5",
             cache_dir="/tmp/fastembed_cache"
         )
         logger.info('[Ingest] Modelo cargado ✅')

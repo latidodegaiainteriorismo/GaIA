@@ -156,3 +156,21 @@ def ingest():
         'title':           title,
         'category':        category,
     })
+
+@ingest_bp.route("/ingest/test-hf", methods=["GET"])
+def test_hf_connection():
+    import requests, os
+    try:
+        hf_key = os.environ.get("HUGGINGFACE_API_KEY")
+        url = "https://api-inference.huggingface.co/pipeline/feature-extraction/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+        r = requests.post(
+            url,
+            headers={"Authorization": f"Bearer {hf_key}"},
+            json={"inputs": "prueba de consciencia"},
+            timeout=15
+        )
+        data = r.json()
+        vector = data[0] if isinstance(data[0], list) else data
+        return {"ok": True, "dims": len(vector), "sample": vector[:3]}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}, 500

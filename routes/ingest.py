@@ -17,7 +17,7 @@ def get_embed_model():
         from fastembed import TextEmbedding
         logger.info('[Ingest] Cargando modelo de embeddings...')
         _embed_model = TextEmbedding(
-            model_name="BAAI/bge-small-multilingual-v1.5",
+            model_name="BAAI/bge-small-en-v1.5",
             cache_dir="/tmp/fastembed_cache"
         )
         logger.info('[Ingest] Modelo cargado ✅')
@@ -31,6 +31,16 @@ def get_embedding(text: str) -> list[float] | None:
     except Exception as e:
         logger.error(f'[Ingest] Embedding error: {e}')
         return None
+
+# ── Diagnóstico: qué modelos están disponibles ────────────────────────────────
+@ingest_bp.route('/ingest/models', methods=['GET'])
+def list_models():
+    try:
+        from fastembed import TextEmbedding
+        models = TextEmbedding.list_supported_models()
+        return jsonify({'models': [m['model'] for m in models]})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 # ── Chunking ──────────────────────────────────────────────────────────────────
 def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list[str]:

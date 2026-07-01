@@ -1,0 +1,35 @@
+name: Ingest Knowledge
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'knowledge/**'
+  workflow_dispatch:   # permite lanzarlo manualmente desde GitHub
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache modelo HuggingFace
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-paraphrase-multilingual-MiniLM-L12-v2
+
+      - name: Instalar dependencias
+        run: pip install sentence-transformers psycopg2-binary
+
+      - name: Ingestar conocimiento
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python scripts/ingest_knowledge.py

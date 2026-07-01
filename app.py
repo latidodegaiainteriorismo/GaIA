@@ -3,12 +3,13 @@ import logging
 from datetime import datetime
 from flask import Flask, jsonify
 from flask_cors import CORS
-from routes.ingest import ingest_bp
-app.register_blueprint(ingest_bp)
+
 
 from routes.auth          import auth_bp
 from routes.conversations import conversations_bp
 from routes.chat          import chat_bp
+from routes.ingest import ingest_bp
+app.register_blueprint(ingest_bp)
 
 # ── LOGGING ───────────────────────────────────────────────────────────────────
 logging.basicConfig(

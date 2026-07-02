@@ -100,9 +100,13 @@ def chat():
             )
             db_run("UPDATE conversations SET updated_at = NOW() WHERE id = %s", (conv_id,))
 
+    # ── Knowledge RAG (FASE 2) ───────────────────────────────────────────────
+    chunks           = search_knowledge(message, top_k=3)
+    knowledge_context = format_knowledge_context(chunks)
+
     # ── Llamada al LLM ───────────────────────────────────────────────────────
     try:
-        gaia_text = call_groq(history, cross_memory)
+        gaia_text = call_groq(history, cross_memory, knowledge_context=knowledge_context)
     except Exception as e:
         logger.error(f'[CHAT] Groq error: {e}')
         return jsonify({'error': 'Error al conectar con GaIA'}), 500

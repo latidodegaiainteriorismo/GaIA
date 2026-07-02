@@ -4,6 +4,7 @@ from db import db_all, db_one, db_run
 from auth import get_user_from_token
 from llm import call_groq
 from tts import text_to_speech
+from knowledge import search_knowledge, format_knowledge_context
 
 logger  = logging.getLogger(__name__)
 chat_bp = Blueprint('chat', __name__)

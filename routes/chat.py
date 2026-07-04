@@ -2,7 +2,7 @@ import logging
 from flask import Blueprint, request, jsonify
 from db import db_all, db_one, db_run
 from auth import get_user_from_token
-from llm import call_groq
+from llm import call_groq, GroqRateLimitError
 from tts import text_to_speech
 from knowledge import search_knowledge, format_knowledge_context
 
@@ -107,6 +107,14 @@ def chat():
     # ── Llamada al LLM ───────────────────────────────────────────────────────
     try:
         gaia_text = call_groq(history, cross_memory, knowledge_context=knowledge_context)
+    except GroqRateLimitError as e:
+        logger.error(f'[CHAT] Rate limit: {e}')
+        if e.retry_after_seconds:
+            minutos = max(1, round(e.retry_after_seconds / 60))
+            mensaje = f'GaIA necesita descansar un poco — vuelve a intentarlo en unos {minutos} minutos.'
+        else:
+            mensaje = 'GaIA necesita descansar un poco — inténtalo de nuevo en unos minutos.'
+        return jsonify({'error': mensaje}), 429
     except Exception as e:
         logger.error(f'[CHAT] Groq error: {e}')
         return jsonify({'error': 'Error al conectar con GaIA'}), 500

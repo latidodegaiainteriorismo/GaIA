@@ -9,3 +9,4 @@ edge-tts
 pdfplumber
 youtube-transcript-api
 fastembed
+duckduckgo-search

@@ -1,0 +1,15 @@
+Flask
+flask-cors
+groq
+requests
+gunicorn
+google-auth
+psycopg2-binary
+edge-tts
+pdfplumber
+youtube-transcript-api
+fastembed
+duckduckgo-search
+skyfield==1.54
+skyfield-data==7.0.0
+timezonefinder==8.2.4

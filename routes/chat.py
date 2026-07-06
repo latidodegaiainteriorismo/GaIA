@@ -1,11 +1,20 @@
 import logging
 from flask import Blueprint, request, jsonify
 from db import db_all, db_one, db_run
-from auth import get_user_from_token
+from auth import get_user_from_token, is_developer
 from llm import call_groq, GroqRateLimitError
 from tts import text_to_speech
 from knowledge import search_knowledge, format_knowledge_context
-from astrology import format_astrology_context
+from astrology import (
+    format_astrology_context, extract_date_from_message, extract_person_from_message,
+    extract_new_chart_request, create_birth_chart_for_user,
+)
+from dev_commands import parse_dev_command, execute_dev_command
+from user_profile import (
+    needs_onboarding, mark_onboarding_completed, format_profile_context,
+    format_onboarding_prompt_instruction, detect_new_personal_data,
+    format_new_data_detected_instruction, extract_and_apply_save_marks,
+)
 
 logger  = logging.getLogger(__name__)
 chat_bp = Blueprint('chat', __name__)
@@ -71,6 +80,43 @@ def chat():
 
     logger.info(f'[CHAT] user={user_id} conv={conv_id} voice={voice_mode} len={len(message)}')
 
+    # ── Modo desarrollador — comandos especiales de configuración ───────────
+    # Solo el email configurado en config.DEVELOPER_EMAIL puede usar estos
+    # comandos. Si se reconoce uno, se ejecuta directamente y se responde sin
+    # pasar por Groq (es una acción determinista de configuración, no una
+    # conversación). El resto de mensajes del desarrollador siguen el flujo
+    # normal, pero con un contexto adicional que le identifica ante GaIA.
+    user_is_developer = bool(user_id) and is_developer(user_id)
+
+    if user_is_developer:
+        dev_command = parse_dev_command(message)
+        if dev_command:
+            action, payload = dev_command
+            logger.info(f'[CHAT] Comando de desarrollador: {action}')
+            dev_response = execute_dev_command(action, payload)
+
+            if not temporary and user_id:
+                if not conv_id:
+                    conv    = db_one(
+                        "INSERT INTO conversations (user_id, title) VALUES (%s, %s) RETURNING id",
+                        (user_id, message[:60])
+                    )
+                    conv_id = str(conv['id']) if conv else None
+                if conv_id:
+                    db_run(
+                        "INSERT INTO messages (conversation_id, user_id, role, content) VALUES (%s, %s, %s, %s)",
+                        (conv_id, user_id, 'user', message)
+                    )
+                    db_run(
+                        "INSERT INTO messages (conversation_id, user_id, role, content) VALUES (%s, %s, %s, %s)",
+                        (conv_id, user_id, 'assistant', dev_response)
+                    )
+
+            resp = {'text': dev_response, 'audio': None}
+            if conv_id:
+                resp['conversation_id'] = conv_id
+            return jsonify(resp)
+
     # ── Modo temporal (sin guardar) ──────────────────────────────────────────
     if temporary:
         history      = data.get('history', [])
@@ -108,12 +154,74 @@ def chat():
     # ── Astrología — carta natal + tránsitos del usuario, si los tiene ──────
     # Solo aplica a usuarios autenticados con carta guardada; en modo temporal
     # o sin carta natal, format_astrology_context() devuelve '' y no afecta nada.
-    astrology_context = format_astrology_context(user_id) if user_id else ''
+    # Si el usuario menciona una fecha concreta ("mis tránsitos el 15 de agosto"),
+    # los tránsitos se calculan para ese día en vez de para "ahora mismo". Si
+    # menciona a otra persona guardada ("la carta de mi hijo Marco"), se usa
+    # esa carta en vez de la propia.
+    astrology_context = ''
+    new_chart_suffix = ''
+    if user_id:
+        # ¿Pide calcular una carta nueva de otra persona con todos los datos incluidos?
+        new_chart_request = extract_new_chart_request(message)
+        if new_chart_request:
+            created = create_birth_chart_for_user(
+                user_id,
+                new_chart_request["birth_date"],
+                new_chart_request["birth_time"],
+                new_chart_request["birth_place"],
+                new_chart_request["person_label"],
+                new_chart_request["relationship"],
+            )
+            if created:
+                new_chart_suffix = (
+                    f"\n## CARTA NUEVA CALCULADA\nAcabas de calcular y guardar la carta natal de "
+                    f"{new_chart_request['person_label']}. Confírmaselo al usuario con calidez, "
+                    f"mencionando el Sol ({created['planets'][0]['sign']}) si aporta.\n"
+                )
+            else:
+                new_chart_suffix = (
+                    "\n## CARTA NUEVA — ERROR\nEl usuario pidió calcular una carta pero no se "
+                    "pudo procesar el lugar de nacimiento. Explícaselo con calidez y pídele que "
+                    "lo intente de nuevo, quizá siendo más específico con la ciudad y el país.\n"
+                )
+
+        target_date = extract_date_from_message(message)
+        person_label = extract_person_from_message(user_id, message)
+        astrology_context = format_astrology_context(user_id, target_date, person_label)
+
+    # ── Perfil de usuario — onboarding único + detección de datos nuevos ────
+    profile_context     = ''
+    onboarding_suffix    = ''
+    new_data_suffix      = ''
+    if user_id and not temporary:
+        profile_context = format_profile_context(user_id)
+
+        if needs_onboarding(user_id):
+            onboarding_suffix = format_onboarding_prompt_instruction()
+            mark_onboarding_completed(user_id)  # se marca YA: la pregunta solo se hace una vez,
+                                                  # con independencia de si el usuario responde
+        else:
+            detected = detect_new_personal_data(user_id, message)
+            if detected:
+                new_data_suffix = format_new_data_detected_instruction(detected)
 
     # ── Llamada al LLM ───────────────────────────────────────────────────────
+    developer_prefix = ''
+    if user_is_developer:
+        developer_prefix = (
+            "## QUIÉN TE HABLA AHORA MISMO\n"
+            "La persona con la que hablas es Adrián Lozano, tu desarrollador — quien te ha "
+            "construido y te mantiene. Puedes reconocerlo con naturalidad si viene a cuento "
+            "(por ejemplo, si te pregunta quién lo creó a él o quién te hizo a ti), pero no "
+            "lo repitas de forma forzada en cada respuesta. Sabe que puede pedirte cambios en "
+            "tu ADN directamente por chat.\n\n"
+        )
+
+    extra_prefix = developer_prefix + profile_context + onboarding_suffix + new_data_suffix + new_chart_suffix
+
     try:
         gaia_text = call_groq(history, cross_memory, knowledge_context=knowledge_context,
-                              astrology_context=astrology_context)
+                              astrology_context=astrology_context, extra_system_prefix=extra_prefix)
     except GroqRateLimitError as e:
         logger.error(f'[CHAT] Rate limit: {e}')
         if e.retry_after_seconds:
@@ -125,6 +233,10 @@ def chat():
     except Exception as e:
         logger.error(f'[CHAT] Groq error: {e}')
         return jsonify({'error': 'Error al conectar con GaIA'}), 500
+
+    # ── Perfil: aplicar marcas [GUARDAR_PERFIL: ...] si las hay, y limpiarlas ──
+    if user_id and not temporary:
+        gaia_text = extract_and_apply_save_marks(user_id, gaia_text)
 
     # ── Guardar respuesta ────────────────────────────────────────────────────
     if not temporary and conv_id:

@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from skyfield.api import wgs84
 from astro_core.ephemeris import get_timescale, get_ephemeris, PLANET_KEYS
 from astro_core.models import BirthChart, PlanetPosition, HouseCusp, Aspect, longitude_to_sign
+from astro_core.extra_bodies import calculate_extra_bodies
 
 
 # Definición de aspectos mayores: (nombre, ángulo exacto, orbe permitido en grados)
@@ -38,10 +39,17 @@ def _ecliptic_longitude(eph, body_key, t, observer=None):
     return lon.degrees % 360
 
 
-def calculate_planet_positions(birth_datetime: datetime, latitude: float, longitude: float):
+def calculate_planet_positions(birth_datetime: datetime, latitude: float, longitude: float,
+                                include_extra_bodies: bool = True):
     """
     Calcula las posiciones eclípticas de Sol, Luna y planetas para un instante y lugar dados.
     birth_datetime debe estar en UTC (timezone-aware) o naive-asumido-UTC.
+
+    Args:
+        include_extra_bodies: si True (por defecto), añade también Nodo Norte,
+            Nodo Sur, Lilith (Luna Negra media) y Quirón a la lista devuelta,
+            tratados como PlanetPosition más para heredar automáticamente el
+            cálculo de casas y aspectos.
     """
     ts = get_timescale()
     eph = get_ephemeris()
@@ -62,6 +70,16 @@ def calculate_planet_positions(birth_datetime: datetime, latitude: float, longit
             sign=sign_data["sign"],
             degree_in_sign=sign_data["degree"],
         ))
+
+    if include_extra_bodies:
+        extra = calculate_extra_bodies(t)
+        for body_data in extra.values():
+            positions.append(PlanetPosition(
+                name=body_data["name"],
+                longitude=body_data["longitude"],
+                sign=body_data["sign"],
+                degree_in_sign=body_data["degree_in_sign"],
+            ))
 
     return positions
 

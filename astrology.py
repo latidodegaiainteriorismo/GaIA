@@ -236,6 +236,38 @@ def _planet_es(name: str) -> str:
     return _PLANET_ES.get(name, name.capitalize())
 
 
+# ── Relevancia — ¿merece la pena inyectar la carta natal? ────────────────
+
+_ASTROLOGY_TRIGGER_WORDS = [
+    "carta natal", "carta astral", "mi carta", "su carta", "tránsito", "transito",
+    "tránsitos", "transitos", "signo", "astral", "horóscopo", "horoscopo",
+    "planeta", "planetas", "ascendente", "luna en", "sol en", "astrología",
+    "astrologia", "zodiaco", "zodíaco", "retrógrado", "retrogrado",
+    "conjunción", "conjuncion", "cuadratura", "trígono", "trigono",
+    "oposición astral", "oposicion astral", "sextil", "casa astrológica",
+    "casa astrologica", "regente", "quirón", "quiron", "lilith", "nodo norte",
+    "nodo sur", "mercurio retrogrado", "mercurio retrógrado",
+]
+
+
+def is_astrology_related(message: str) -> bool:
+    """
+    Heurística simple (sin llamar a Groq, es solo un filtro de palabras clave):
+    decide si el mensaje realmente parece ir de astrología antes de construir
+    y adjuntar el bloque de carta natal + tránsitos al contexto.
+
+    Por qué existe: format_astrology_context() genera un bloque de texto no
+    trivial (todos los planetas, casas, y los tránsitos activos con sus
+    aspectos). Adjuntarlo en CADA mensaje, aunque el usuario hable de otra
+    cosa, infla el prompt innecesariamente y puede hacer que la petición
+    supere el límite de tokens por petición de algunos modelos — además de
+    ir en contra de la propia instrucción del ADN de GaIA de "no mencionar
+    esto de forma forzada en temas que no lo pidan".
+    """
+    msg_lower = message.lower()
+    return any(w in msg_lower for w in _ASTROLOGY_TRIGGER_WORDS)
+
+
 def format_astrology_context(user_id: str, target_date: str = None,
                               person_label: str = DEFAULT_PERSON_LABEL) -> str:
     """

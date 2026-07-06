@@ -7,7 +7,7 @@ from tts import text_to_speech
 from knowledge import search_knowledge, format_knowledge_context
 from astrology import (
     format_astrology_context, extract_date_from_message, extract_person_from_message,
-    extract_new_chart_request, create_birth_chart_for_user,
+    extract_new_chart_request, create_birth_chart_for_user, is_astrology_related,
 )
 from dev_commands import parse_dev_command, execute_dev_command
 from user_profile import (
@@ -158,6 +158,12 @@ def chat():
     # los tránsitos se calculan para ese día en vez de para "ahora mismo". Si
     # menciona a otra persona guardada ("la carta de mi hijo Marco"), se usa
     # esa carta en vez de la propia.
+    #
+    # IMPORTANTE: solo construimos este bloque si el mensaje realmente parece
+    # ir de astrología (is_astrology_related) o si pide calcular una carta
+    # nueva explícitamente. Antes se inyectaba SIEMPRE que hubiera carta
+    # guardada, sin importar el tema — eso infla el prompt en cada turno y
+    # puede hacer que la petición supere el límite de tokens de Groq (413).
     astrology_context = ''
     new_chart_suffix = ''
     if user_id:
@@ -185,9 +191,10 @@ def chat():
                     "lo intente de nuevo, quizá siendo más específico con la ciudad y el país.\n"
                 )
 
-        target_date = extract_date_from_message(message)
-        person_label = extract_person_from_message(user_id, message)
-        astrology_context = format_astrology_context(user_id, target_date, person_label)
+        if new_chart_request or is_astrology_related(message):
+            target_date = extract_date_from_message(message)
+            person_label = extract_person_from_message(user_id, message)
+            astrology_context = format_astrology_context(user_id, target_date, person_label)
 
     # ── Perfil de usuario — onboarding único + detección de datos nuevos ────
     profile_context     = ''

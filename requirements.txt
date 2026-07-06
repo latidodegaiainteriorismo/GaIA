@@ -13,3 +13,4 @@ duckduckgo-search
 skyfield==1.54
 skyfield-data==7.0.0
 timezonefinder==8.2.4
+pandas

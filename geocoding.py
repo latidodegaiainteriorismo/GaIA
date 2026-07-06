@@ -1,26 +1,22 @@
 """
 geocoding.py
 
-Resuelve "Alicante, España" -> latitud, longitud, timezone.
-Usa Nominatim (OpenStreetMap) para geocoding — gratis, sin API key.
-Usa timezonefinder para resolver la zona horaria offline a partir de lat/lon
-— también gratis, sin API key, sin llamadas de red.
-
-Nominatim exige un User-Agent identificable y máximo 1 petición/segundo
-(uso justo, sin API key). Para el volumen de GaIA (usuarios calculando su
-carta natal, no un batch masivo) esto es más que suficiente.
+Resuelve lugar en texto -> latitud, longitud, timezone.
+Usa LocationIQ (gratis, requiere API key, funciona bien desde servidores en la nube).
+Usa timezonefinder para resolver zona horaria offline.
 """
 
+import os
 import logging
 import requests
 from timezonefinder import TimezoneFinder
 
 logger = logging.getLogger(__name__)
 
-_NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
-_HEADERS = {"User-Agent": "GaIA-Astrologia/1.0 (contacto: gaia.conscienciaintegral@gmail.com)"}
+_LOCATIONIQ_URL = "https://us1.locationiq.com/v1/search"
+_LOCATIONIQ_KEY = os.environ.get("LOCATIONIQ_API_KEY", "")
 
-_tf = None  # TimezoneFinder es costoso de instanciar — cacheado como singleton
+_tf = None
 
 
 def _get_tf():
@@ -30,27 +26,22 @@ def _get_tf():
     return _tf
 
 
-def geocode_location(place_name: str) -> dict | None:
-    """
-    Convierte un nombre de lugar en coordenadas + timezone.
+def geocode_location(place_name):
+    if not _LOCATIONIQ_KEY:
+        logger.error("[geocoding] Falta LOCATIONIQ_API_KEY en variables de entorno")
+        return None
 
-    Args:
-        place_name: ej. "Alicante, España" o "Ciudad de México, México"
-
-    Returns:
-        dict con 'latitude', 'longitude', 'timezone', 'display_name' — o None si falla.
-    """
     try:
         resp = requests.get(
-            _NOMINATIM_URL,
-            params={"q": place_name, "format": "json", "limit": 1},
-            headers=_HEADERS,
+            _LOCATIONIQ_URL,
+            params={"key": _LOCATIONIQ_KEY, "q": place_name, "format": "json", "limit": 1},
             timeout=8,
         )
         resp.raise_for_status()
         results = resp.json()
+
         if not results:
-            logger.warning(f"[geocoding] Sin resultados para '{place_name}'")
+            logger.warning(f"[geocoding] Sin resultados para {place_name}")
             return None
 
         lat = float(results[0]["lat"])
@@ -63,8 +54,9 @@ def geocode_location(place_name: str) -> dict | None:
             "timezone": timezone_name or "UTC",
             "display_name": results[0].get("display_name", place_name),
         }
+
     except requests.RequestException as e:
-        logger.error(f"[geocoding] Error consultando Nominatim: {e}")
+        logger.error(f"[geocoding] Error consultando LocationIQ: {e}")
         return None
     except Exception as e:
         logger.error(f"[geocoding] Error inesperado: {e}")

@@ -7,19 +7,32 @@ GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '')
 # devuelve rate-limit (429) o payload-too-large (413 por exceso de TPM),
 # se prueba el siguiente de la lista. Todos gratuitos en Groq a fecha jul-2026.
 #
-# NOTA: llama-3.1-8b-instant y llama-3.3-70b-versatile fueron anunciados
-# como deprecados por Groq el 17-jun-2026. Se migra a la familia GPT-OSS /
-# Qwen3.6, con mejor cuota de TPM en el tier gratuito (250K vs 12K).
+# Límites reales del tier gratuito (consultados en console.groq.com/settings/limits
+# el 6-jul-2026) — ojo, son POR MODELO, no compartidos entre todos:
+#
+#   meta-llama/llama-4-scout-17b-16e-instruct : 30K TPM / 500K TPD  ← el más holgado
+#   llama-3.3-70b-versatile                   : 12K TPM / 100K TPD
+#   llama-3.1-8b-instant                      :  6K TPM / 500K TPD
+#   openai/gpt-oss-120b                       :  8K TPM / 200K TPD
+#   openai/gpt-oss-20b                        :  8K TPM / 200K TPD
+#   qwen/qwen3.6-27b                          :  8K TPM / 200K TPD
+#
+# NOTA (jul-2026): la familia GPT-OSS / Qwen3.6 tiene un TPM (8K) más bajo de
+# lo que se pensaba inicialmente — con el ADN (~4-5K tokens) + RAG + memoria
+# cruzada + perfil de usuario, una sola petición puede consumir gran parte de
+# esa cuota, provocando 413 en los tres modelos de golpe tras pocos mensajes
+# seguidos. Se migra la cadena principal a llama-4-scout / llama-3.3, que
+# tienen bastante más margen (30K y 12K TPM respectivamente).
 GROQ_MODELS_GENERAL = [
-    'openai/gpt-oss-120b',   # principal — mejor calidad de razonamiento/conversación
-    'qwen/qwen3.6-27b',      # fallback — familia de pesos distinta, mismo TPM (250K)
-    'openai/gpt-oss-20b',    # último recurso — rápido, más TPM (250K), calidad menor
+    'meta-llama/llama-4-scout-17b-16e-instruct',  # principal — mejor margen de TPM/TPD con diferencia
+    'llama-3.3-70b-versatile',                    # fallback — buena calidad, TPM más ajustado
+    'llama-3.1-8b-instant',                       # último recurso — rápido, TPD muy alto (500K)
 ]
 
 GROQ_MODELS_ASTROLOGY = [
-    'openai/gpt-oss-20b',    # principal — riguroso con datos estructurados, rápido, barato
-    'qwen/qwen3.6-27b',      # fallback — mayor capacidad si 20b se queda corto
-    'openai/gpt-oss-120b',   # último recurso — comparte cuota con el chat general
+    'llama-3.1-8b-instant',                       # principal — rápido y barato para datos estructurados
+    'meta-llama/llama-4-scout-17b-16e-instruct',  # fallback — mucho margen si el pequeño se satura
+    'llama-3.3-70b-versatile',                    # último recurso
 ]
 
 # Retrocompatibilidad: código legado que aún importe GROQ_MODEL directamente

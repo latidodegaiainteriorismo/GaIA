@@ -13,11 +13,11 @@ from astro_core.models import BirthChart, PlanetPosition, HouseCusp, Aspect, lon
 
 # Definición de aspectos mayores: (nombre, ángulo exacto, orbe permitido en grados)
 MAJOR_ASPECTS = [
-    ("conjunción", 0, 8),
-    ("sextil", 60, 6),
-    ("cuadratura", 90, 7),
-    ("trígono", 120, 7),
-    ("oposición", 180, 8),
+    ("conjunción", 0, 10),
+    ("sextil", 60, 10),
+    ("cuadratura", 90, 10),
+    ("trígono", 120, 10),
+    ("oposición", 180, 10),
 ]
 
 

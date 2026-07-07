@@ -12,21 +12,26 @@ from astro_core.models import BirthChart
 
 
 # ── Constantes visuales ──────────────────────────────────────────────────
+# NOTA (jul-2026): tamaño y radios aumentados respecto a la v1 — los símbolos
+# eran demasiado pequeños para leerse con comodidad, y las líneas de aspectos
+# apenas se distinguían (opacidad/grosor muy bajos). Esta versión da más
+# espacio a cada anillo y refuerza el contraste de las líneas de aspectos.
 
-_SIZE = 640
+_SIZE = 760
 _CENTER = _SIZE / 2
-_R_OUTER = 280          # borde exterior del disco zodiacal (deja margen para etiqueta ASC)
-_R_ZODIAC_IN = 248      # borde interior de la banda de signos
+_R_OUTER = 330          # borde exterior del disco zodiacal (deja margen para etiqueta ASC)
+_R_ZODIAC_IN = 288      # borde interior de la banda de signos
 
 # Radios para carta natal SIMPLE (un solo anillo de planetas, más espacio disponible)
-_R_SOLO_PLANETS = 165
-_R_SOLO_HOUSES_IN = 130
+_R_SOLO_PLANETS = 205
+_R_SOLO_HOUSES_IN = 150
+_R_SOLO_ASPECTS = 150   # radio donde se cruzan las líneas de aspectos — mismo que houses_in
 
 # Radios para carta BI-WHEEL (natal + tránsitos, dos anillos que no deben solaparse)
-_R_TRANSIT_RING = 225
-_R_NATAL_PLANETS = 130
-_R_HOUSES_IN = 95
-_R_ASPECT_LINES = 95
+_R_TRANSIT_RING = 258
+_R_NATAL_PLANETS = 150
+_R_HOUSES_IN = 105
+_R_ASPECT_LINES = 105
 
 _ZODIAC_SYMBOLS = ["♈", "♉", "♊", "♋", "♌", "♍", "♎", "♏", "♐", "♑", "♒", "♓"]
 _PLANET_SYMBOLS = {
@@ -37,10 +42,21 @@ _PLANET_SYMBOLS = {
 
 _ASPECT_COLORS = {
     "conjunción": "#A0693A",
-    "oposición": "#C96B6B",
-    "cuadratura": "#C96B6B",
-    "trígono": "#4A7B7E",
-    "sextil": "#6B9EA0",
+    "oposición": "#C24B4B",
+    "cuadratura": "#C24B4B",
+    "trígono": "#3F7A7D",
+    "sextil": "#5B9C9E",
+}
+
+# Grosor por tipo de aspecto — los "duros" (oposición/cuadratura) y la
+# conjunción se marcan algo más fuerte que los "fáciles" (trígono/sextil),
+# ayuda a leer la carta de un vistazo antes incluso de mirar los grados.
+_ASPECT_WIDTHS = {
+    "conjunción": 2.2,
+    "oposición": 2.2,
+    "cuadratura": 2.0,
+    "trígono": 1.6,
+    "sextil": 1.4,
 }
 
 _TEAL = "#4A7B7E"
@@ -56,10 +72,7 @@ def _polar_to_xy(longitude_deg: float, radius: float, ascendant_deg: float = 0.0
     convención estándar en cartas astrológicas, y los signos avanzan en sentido
     antihorario (también convención estándar).
     """
-    # Ángulo relativo al Ascendente, con 0° = izquierda (180° en coords SVG estándar)
     relative_angle = (longitude_deg - ascendant_deg) % 360
-    # SVG: 0° = derecha, ángulos crecen en sentido horario. Invertimos para
-    # que la carta gire antihorario como es convención astrológica.
     theta = math.radians(180 - relative_angle)
     x = _CENTER + radius * math.cos(theta)
     y = _CENTER - radius * math.sin(theta)
@@ -77,36 +90,34 @@ def _svg_header():
 def _draw_zodiac_ring(ascendant_deg: float) -> str:
     """Dibuja el anillo exterior con los 12 signos zodiacales."""
     parts = [
-        f'<circle cx="{_CENTER}" cy="{_CENTER}" r="{_R_OUTER}" fill="none" stroke="{_TEAL}" stroke-width="1.5" opacity="0.5"/>',
-        f'<circle cx="{_CENTER}" cy="{_CENTER}" r="{_R_ZODIAC_IN}" fill="none" stroke="{_TEAL}" stroke-width="1" opacity="0.35"/>',
+        f'<circle cx="{_CENTER}" cy="{_CENTER}" r="{_R_OUTER}" fill="none" stroke="{_TEAL}" stroke-width="2" opacity="0.55"/>',
+        f'<circle cx="{_CENTER}" cy="{_CENTER}" r="{_R_ZODIAC_IN}" fill="none" stroke="{_TEAL}" stroke-width="1.5" opacity="0.4"/>',
     ]
     for i in range(12):
         sign_start = i * 30
-        # Línea divisoria entre signos
         x1, y1 = _polar_to_xy(sign_start, _R_ZODIAC_IN, ascendant_deg)
         x2, y2 = _polar_to_xy(sign_start, _R_OUTER, ascendant_deg)
         parts.append(f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" '
-                     f'stroke="{_TEAL}" stroke-width="0.75" opacity="0.3"/>')
-        # Símbolo del signo, centrado en su banda de 30°
+                     f'stroke="{_TEAL}" stroke-width="1" opacity="0.35"/>')
         symbol_x, symbol_y = _polar_to_xy(sign_start + 15, (_R_OUTER + _R_ZODIAC_IN) / 2, ascendant_deg)
-        parts.append(f'<text x="{symbol_x:.1f}" y="{symbol_y:.1f}" font-size="18" fill="{_TERRACOTA}" '
-                     f'text-anchor="middle" dominant-baseline="middle" opacity="0.85">{_ZODIAC_SYMBOLS[i]}</text>')
+        parts.append(f'<text x="{symbol_x:.1f}" y="{symbol_y:.1f}" font-size="30" fill="{_TERRACOTA}" '
+                     f'text-anchor="middle" dominant-baseline="middle" opacity="0.9">{_ZODIAC_SYMBOLS[i]}</text>')
     return "".join(parts)
 
 
 def _draw_houses(chart: BirthChart, ascendant_deg: float, r_houses_in: float) -> str:
     """Dibuja las 12 líneas de casas y sus números."""
     parts = [f'<circle cx="{_CENTER}" cy="{_CENTER}" r="{r_houses_in}" fill="none" '
-             f'stroke="{_TEXT}" stroke-width="0.5" opacity="0.25"/>']
+             f'stroke="{_TEXT}" stroke-width="0.75" opacity="0.3"/>']
     for house in chart.houses:
         x1, y1 = _polar_to_xy(house.longitude, r_houses_in, ascendant_deg)
         x2, y2 = _polar_to_xy(house.longitude, _R_ZODIAC_IN, ascendant_deg)
-        is_angle = house.house_number in (1, 4, 7, 10)  # ejes ASC/IC/DSC/MC, algo más marcados
+        is_angle = house.house_number in (1, 4, 7, 10)
         parts.append(f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" '
-                     f'stroke="{_TEXT}" stroke-width="{1.2 if is_angle else 0.5}" opacity="{0.4 if is_angle else 0.2}"/>')
-        num_x, num_y = _polar_to_xy(house.longitude + 15, r_houses_in - 18, ascendant_deg)
-        parts.append(f'<text x="{num_x:.1f}" y="{num_y:.1f}" font-size="11" fill="{_TEXT}" '
-                     f'text-anchor="middle" dominant-baseline="middle" opacity="0.4">{house.house_number}</text>')
+                     f'stroke="{_TEXT}" stroke-width="{1.8 if is_angle else 0.75}" opacity="{0.5 if is_angle else 0.25}"/>')
+        num_x, num_y = _polar_to_xy(house.longitude + 15, r_houses_in - 22, ascendant_deg)
+        parts.append(f'<text x="{num_x:.1f}" y="{num_y:.1f}" font-size="15" fill="{_TEXT}" '
+                     f'text-anchor="middle" dominant-baseline="middle" opacity="0.5" font-weight="bold">{house.house_number}</text>')
     return "".join(parts)
 
 
@@ -115,11 +126,11 @@ def _draw_planets(planets, radius: float, ascendant_deg: float, color: str) -> s
     Dibuja símbolos de planetas en el radio dado. Reutilizable para natal y tránsito.
     Cuando dos o más planetas caen muy cerca en longitud, se desplazan radialmente
     (no angularmente) para evitar que los símbolos se solapen entre sí.
+    Cada símbolo lleva debajo su grado exacto dentro del signo, en texto pequeño.
     """
     parts = []
     sorted_planets = sorted(planets, key=lambda p: p.longitude)
 
-    # Agrupar planetas que están a menos de 7° entre sí (clusters de solapamiento)
     clusters = []
     current_cluster = []
     for p in sorted_planets:
@@ -136,27 +147,29 @@ def _draw_planets(planets, radius: float, ascendant_deg: float, color: str) -> s
     for cluster in clusters:
         n = len(cluster)
         for i, p in enumerate(cluster):
-            # Dentro de un cluster, escalonamos el radio ligeramente para separar
-            # visualmente los símbolos sin desplazar su posición angular real.
-            radial_offset = (i - (n - 1) / 2) * 16
+            radial_offset = (i - (n - 1) / 2) * 22
             x, y = _polar_to_xy(p.longitude, radius + radial_offset, ascendant_deg)
             symbol = _PLANET_SYMBOLS.get(p.name, "?")
-            parts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="9" fill="{_BG}" opacity="0.85"/>')
-            parts.append(f'<text x="{x:.1f}" y="{y:.1f}" font-size="15" fill="{color}" '
-                         f'text-anchor="middle" dominant-baseline="central">{symbol}</text>')
+            parts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="14" fill="{_BG}" opacity="0.92"/>')
+            parts.append(f'<text x="{x:.1f}" y="{y:.1f}" font-size="24" fill="{color}" '
+                         f'text-anchor="middle" dominant-baseline="central" font-weight="bold">{symbol}</text>')
+            deg_x, deg_y = _polar_to_xy(p.longitude, radius + radial_offset + 20, ascendant_deg)
+            parts.append(f'<text x="{deg_x:.1f}" y="{deg_y:.1f}" font-size="10" fill="{_TEXT}" '
+                         f'text-anchor="middle" dominant-baseline="middle" opacity="0.65">'
+                         f'{round(p.degree_in_sign)}°</text>')
     return "".join(parts)
 
 
 def _draw_aspect_lines(chart: BirthChart, ascendant_deg: float, radius: float) -> str:
     """
     Dibuja las líneas de aspectos natales entre planetas, dentro del círculo de casas.
-    Solo se dibujan aspectos con orbe ajustado (<=6°) para mantener la carta legible;
+    Solo se dibujan aspectos con orbe ajustado (<=7°) para mantener la carta legible;
     el listado completo de aspectos sigue disponible en los datos, esto es solo la
-    representación visual. La opacidad refleja la exactitud del aspecto.
+    representación visual. Grosor y opacidad reflejan tipo de aspecto y exactitud.
     """
     parts = []
     for aspect in chart.aspects:
-        if aspect.orb > 6:
+        if aspect.orb > 7:
             continue
         p1 = chart.get_planet(aspect.planet1)
         p2 = chart.get_planet(aspect.planet2)
@@ -165,10 +178,10 @@ def _draw_aspect_lines(chart: BirthChart, ascendant_deg: float, radius: float) -
         x1, y1 = _polar_to_xy(p1.longitude, radius, ascendant_deg)
         x2, y2 = _polar_to_xy(p2.longitude, radius, ascendant_deg)
         color = _ASPECT_COLORS.get(aspect.aspect_type, _TEXT)
-        # Más exacto (orbe bajo) = línea más visible
-        opacity = 0.55 - (aspect.orb / 6) * 0.3
+        width = _ASPECT_WIDTHS.get(aspect.aspect_type, 1.5)
+        opacity = 0.85 - (aspect.orb / 7) * 0.4
         parts.append(f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" '
-                     f'stroke="{color}" stroke-width="1" opacity="{opacity:.2f}"/>')
+                     f'stroke="{color}" stroke-width="{width}" opacity="{opacity:.2f}"/>')
     return "".join(parts)
 
 
@@ -185,8 +198,30 @@ def _draw_transit_aspect_lines(transit_planets, natal_chart: BirthChart, transit
         x1, y1 = _polar_to_xy(t_planet.longitude, _R_TRANSIT_RING, ascendant_deg)
         x2, y2 = _polar_to_xy(n_planet.longitude, _R_NATAL_PLANETS, ascendant_deg)
         color = _ASPECT_COLORS.get(asp["aspect_type"], _TEXT)
+        width = _ASPECT_WIDTHS.get(asp["aspect_type"], 1.5)
         parts.append(f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" '
-                     f'stroke="{color}" stroke-width="1" opacity="0.45" stroke-dasharray="3,2"/>')
+                     f'stroke="{color}" stroke-width="{width}" opacity="0.6" stroke-dasharray="4,3"/>')
+    return "".join(parts)
+
+
+def _draw_legend(aspects_present: set) -> str:
+    """
+    Pequeña leyenda de colores de aspectos, solo con los tipos que realmente
+    aparecen en esta carta — evita listar 5 tipos si solo hay 2 presentes.
+    """
+    if not aspects_present:
+        return ""
+    parts = []
+    x = 24
+    y = 28
+    for aspect_type in ["conjunción", "trígono", "sextil", "cuadratura", "oposición"]:
+        if aspect_type not in aspects_present:
+            continue
+        color = _ASPECT_COLORS.get(aspect_type, _TEXT)
+        parts.append(f'<line x1="{x}" y1="{y}" x2="{x+20}" y2="{y}" stroke="{color}" stroke-width="2.2"/>')
+        parts.append(f'<text x="{x+26}" y="{y}" font-size="12" fill="{_TEXT}" '
+                     f'dominant-baseline="middle" opacity="0.75">{aspect_type.capitalize()}</text>')
+        y += 20
     return "".join(parts)
 
 
@@ -200,15 +235,17 @@ def render_birth_chart_svg(chart: BirthChart) -> str:
     svg = [_svg_header()]
     svg.append(_draw_zodiac_ring(ascendant_deg))
     svg.append(_draw_houses(chart, ascendant_deg, _R_SOLO_HOUSES_IN))
-    svg.append(_draw_aspect_lines(chart, ascendant_deg, _R_SOLO_HOUSES_IN))
+    svg.append(_draw_aspect_lines(chart, ascendant_deg, _R_SOLO_ASPECTS))
     svg.append(_draw_planets(chart.planets, _R_SOLO_PLANETS, ascendant_deg, _TEAL))
 
-    # Marca del Ascendente — pegada al borde interior del disco, con fondo para legibilidad
-    asc_x, asc_y = _polar_to_xy(ascendant_deg, _R_OUTER + 16, ascendant_deg)
-    asc_x = max(24, min(_SIZE - 24, asc_x))  # clamp dentro del viewBox
-    svg.append(f'<rect x="{asc_x-16:.1f}" y="{asc_y-9:.1f}" width="32" height="18" rx="4" fill="{_BG}" opacity="0.9"/>')
-    svg.append(f'<text x="{asc_x:.1f}" y="{asc_y:.1f}" font-size="12" fill="{_TERRACOTA}" '
+    asc_x, asc_y = _polar_to_xy(ascendant_deg, _R_OUTER + 20, ascendant_deg)
+    asc_x = max(28, min(_SIZE - 28, asc_x))
+    svg.append(f'<rect x="{asc_x-20:.1f}" y="{asc_y-11:.1f}" width="40" height="22" rx="5" fill="{_BG}" opacity="0.92"/>')
+    svg.append(f'<text x="{asc_x:.1f}" y="{asc_y:.1f}" font-size="15" fill="{_TERRACOTA}" '
                f'text-anchor="middle" dominant-baseline="central" font-weight="bold">ASC</text>')
+
+    aspects_present = {a.aspect_type for a in chart.aspects if a.orb <= 7}
+    svg.append(_draw_legend(aspects_present))
 
     svg.append('</svg>')
     return "".join(svg)
@@ -227,25 +264,23 @@ def render_transit_chart_svg(natal_chart: BirthChart, transit_planets, transit_a
     svg.append(_draw_houses(natal_chart, ascendant_deg, _R_HOUSES_IN))
     svg.append(_draw_transit_aspect_lines(transit_planets, natal_chart, transit_aspects, ascendant_deg))
 
-    # Anillo de separación entre tránsitos (fuera) y natal (dentro)
-    svg.append(f'<circle cx="{_CENTER}" cy="{_CENTER}" r="{(_R_NATAL_PLANETS + _R_TRANSIT_RING) / 2 + 5:.1f}" '
-               f'fill="none" stroke="{_TEXT}" stroke-width="0.5" opacity="0.15" stroke-dasharray="2,3"/>')
+    svg.append(f'<circle cx="{_CENTER}" cy="{_CENTER}" r="{(_R_NATAL_PLANETS + _R_TRANSIT_RING) / 2 + 6:.1f}" '
+               f'fill="none" stroke="{_TEXT}" stroke-width="0.75" opacity="0.2" stroke-dasharray="3,4"/>')
 
     svg.append(_draw_planets(natal_chart.planets, _R_NATAL_PLANETS, ascendant_deg, _TEAL))
     svg.append(_draw_planets(transit_planets, _R_TRANSIT_RING, ascendant_deg, _TERRACOTA))
 
-    asc_x, asc_y = _polar_to_xy(ascendant_deg, _R_OUTER + 16, ascendant_deg)
-    asc_x = max(24, min(_SIZE - 24, asc_x))
-    svg.append(f'<rect x="{asc_x-16:.1f}" y="{asc_y-9:.1f}" width="32" height="18" rx="4" fill="{_BG}" opacity="0.9"/>')
-    svg.append(f'<text x="{asc_x:.1f}" y="{asc_y:.1f}" font-size="12" fill="{_TERRACOTA}" '
+    asc_x, asc_y = _polar_to_xy(ascendant_deg, _R_OUTER + 20, ascendant_deg)
+    asc_x = max(28, min(_SIZE - 28, asc_x))
+    svg.append(f'<rect x="{asc_x-20:.1f}" y="{asc_y-11:.1f}" width="40" height="22" rx="5" fill="{_BG}" opacity="0.92"/>')
+    svg.append(f'<text x="{asc_x:.1f}" y="{asc_y:.1f}" font-size="15" fill="{_TERRACOTA}" '
                f'text-anchor="middle" dominant-baseline="central" font-weight="bold">ASC</text>')
 
-    # Leyenda simple: teal = natal, terracota = tránsito
-    legend_y = _SIZE - 24
-    svg.append(f'<circle cx="24" cy="{legend_y}" r="5" fill="{_TEAL}"/>')
-    svg.append(f'<text x="36" y="{legend_y}" font-size="12" fill="{_TEXT}" dominant-baseline="middle" opacity="0.7">Natal</text>')
-    svg.append(f'<circle cx="110" cy="{legend_y}" r="5" fill="{_TERRACOTA}"/>')
-    svg.append(f'<text x="122" y="{legend_y}" font-size="12" fill="{_TEXT}" dominant-baseline="middle" opacity="0.7">Tránsito</text>')
+    legend_y = _SIZE - 28
+    svg.append(f'<circle cx="28" cy="{legend_y}" r="6.5" fill="{_TEAL}"/>')
+    svg.append(f'<text x="42" y="{legend_y}" font-size="14" fill="{_TEXT}" dominant-baseline="middle" opacity="0.75">Natal</text>')
+    svg.append(f'<circle cx="130" cy="{legend_y}" r="6.5" fill="{_TERRACOTA}"/>')
+    svg.append(f'<text x="144" y="{legend_y}" font-size="14" fill="{_TEXT}" dominant-baseline="middle" opacity="0.75">Tránsito</text>')
 
     svg.append('</svg>')
     return "".join(svg)

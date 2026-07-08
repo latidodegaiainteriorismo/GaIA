@@ -1,6 +1,8 @@
 import os
 import re
 import logging
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from groq import Groq, APIStatusError
 from config import GROQ_API_KEY, GROQ_MODELS_GENERAL, GROQ_MODELS_ASTROLOGY
 
@@ -22,6 +24,15 @@ _DNA_ASTROLOGY_PATH = os.path.join(os.path.dirname(__file__), 'prompts', 'gaia_d
 # siguiente modelo de la cadena en vez de fallar directamente.
 _RETRYABLE_STATUS_CODES = (429, 413)
 
+# Zona horaria de referencia para GaIA — Adrián y Mónica operan desde
+# España, y es la zona horaria que tiene sentido mostrarle al usuario en
+# la conversación salvo que en el futuro se quiera personalizar por usuario.
+_APP_TIMEZONE = "Europe/Madrid"
+
+_DIAS_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+_MESES_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto",
+             "septiembre", "octubre", "noviembre", "diciembre"]
+
 
 class GroqRateLimitError(Exception):
     """Se lanza cuando TODOS los modelos de la cadena están agotados/rate-limited.
@@ -30,6 +41,29 @@ class GroqRateLimitError(Exception):
     def __init__(self, message: str, retry_after_seconds=None):
         super().__init__(message)
         self.retry_after_seconds = retry_after_seconds
+
+
+def _current_datetime_block() -> str:
+    """
+    Construye el bloque de fecha/hora actual para inyectar en el system prompt.
+
+    Por qué existe: un LLM no tiene reloj interno — sin este bloque, GaIA no
+    tiene forma de saber qué día es hoy, y puede alucinar fechas si el usuario
+    pregunta "¿qué día es hoy?", "cuánto falta para mi cumpleaños", etc.
+    Se evita depender del locale del sistema (puede no estar configurado en
+    el servidor) escribiendo los nombres de día/mes en español a mano — mismo
+    criterio que _PLANET_ES en astrology.py.
+    """
+    now = datetime.now(ZoneInfo(_APP_TIMEZONE))
+    dia_semana = _DIAS_ES[now.weekday()]
+    mes = _MESES_ES[now.month - 1]
+    return (
+        f"## FECHA Y HORA ACTUAL\n"
+        f"Hoy es {dia_semana}, {now.day} de {mes} de {now.year}. Son las "
+        f"{now.strftime('%H:%M')} (hora peninsular española). Usa esta fecha "
+        f"como referencia real si el usuario pregunta por el día, la hora, "
+        f"cuánto falta para algo, o menciona 'hoy'/'mañana'/'ayer'.\n\n"
+    )
 
 
 def load_dna() -> str:
@@ -164,7 +198,8 @@ def call_groq(history: list, cross_memory: str = '', knowledge_context: str = ''
         GroqRateLimitError: si todos los modelos de la cadena están saturados.
     """
     dna    = load_dna()
-    system = extra_system_prefix + dna + cross_memory + '\n\n' + _build_knowledge_block(knowledge_context)
+    system = (_current_datetime_block() + extra_system_prefix + dna + cross_memory +
+              '\n\n' + _build_knowledge_block(knowledge_context))
     if astrology_context:
         system += '\n\n' + astrology_context
 
@@ -199,7 +234,7 @@ def call_groq_astrology(user_message: str, astrology_context: str) -> str:
     """
     dna_base      = load_dna()
     dna_astrology = load_dna_astrologia()
-    system = dna_base
+    system = _current_datetime_block() + dna_base
     if dna_astrology:
         system += '\n\n' + dna_astrology
     if astrology_context:

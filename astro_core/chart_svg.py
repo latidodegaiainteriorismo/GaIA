@@ -12,26 +12,30 @@ from astro_core.models import BirthChart
 
 
 # ── Constantes visuales ──────────────────────────────────────────────────
-# NOTA (jul-2026): tamaño y radios aumentados respecto a la v1 — los símbolos
-# eran demasiado pequeños para leerse con comodidad, y las líneas de aspectos
-# apenas se distinguían (opacidad/grosor muy bajos). Esta versión da más
-# espacio a cada anillo y refuerza el contraste de las líneas de aspectos.
+# NOTA (jul-2026 v3): añadido "hub" central — las casas ahora son radios
+# completos desde un pequeño círculo interior hasta el anillo zodiacal, y
+# los aspectos se dibujan como telaraña convergiendo en ese mismo hub
+# (estilo carta profesional clásica), en vez de conectar los planetas
+# directamente. También se añade el eje ASC-DSC / MC-IC marcado en rojo.
 
 _SIZE = 760
 _CENTER = _SIZE / 2
-_R_OUTER = 330          # borde exterior del disco zodiacal (deja margen para etiqueta ASC)
+_R_OUTER = 330          # borde exterior del disco zodiacal
 _R_ZODIAC_IN = 288      # borde interior de la banda de signos
 
-# Radios para carta natal SIMPLE (un solo anillo de planetas, más espacio disponible)
-_R_SOLO_PLANETS = 205
-_R_SOLO_HOUSES_IN = 150
-_R_SOLO_ASPECTS = 150   # radio donde se cruzan las líneas de aspectos — mismo que houses_in
+# Hub central — donde convergen las líneas de aspectos y empiezan las casas
+_R_HUB_SOLO = 55
+_R_HUB_BIWHEEL = 42
 
-# Radios para carta BI-WHEEL (natal + tránsitos, dos anillos que no deben solaparse)
+# Radios para carta natal SIMPLE
+_R_SOLO_PLANETS = 205
+_R_SOLO_HOUSE_LABELS = 265   # radio donde se ponen los números de casa, pegados al anillo zodiacal
+
+# Radios para carta BI-WHEEL (natal + tránsitos)
 _R_TRANSIT_RING = 258
 _R_NATAL_PLANETS = 150
 _R_HOUSES_IN = 105
-_R_ASPECT_LINES = 105
+_R_HOUSE_LABELS_BIWHEEL = 118
 
 _ZODIAC_SYMBOLS = ["♈", "♉", "♊", "♋", "♌", "♍", "♎", "♏", "♐", "♑", "♒", "♓"]
 _PLANET_SYMBOLS = {
@@ -48,9 +52,6 @@ _ASPECT_COLORS = {
     "sextil": "#5B9C9E",
 }
 
-# Grosor por tipo de aspecto — los "duros" (oposición/cuadratura) y la
-# conjunción se marcan algo más fuerte que los "fáciles" (trígono/sextil),
-# ayuda a leer la carta de un vistazo antes incluso de mirar los grados.
 _ASPECT_WIDTHS = {
     "conjunción": 2.2,
     "oposición": 2.2,
@@ -63,6 +64,7 @@ _TEAL = "#4A7B7E"
 _TERRACOTA = "#A0693A"
 _TEXT = "#4A4A46"
 _BG = "#FAFAF8"
+_AXIS_RED = "#B23A3A"
 
 
 def _polar_to_xy(longitude_deg: float, radius: float, ascendant_deg: float = 0.0):
@@ -105,19 +107,42 @@ def _draw_zodiac_ring(ascendant_deg: float) -> str:
     return "".join(parts)
 
 
-def _draw_houses(chart: BirthChart, ascendant_deg: float, r_houses_in: float) -> str:
-    """Dibuja las 12 líneas de casas y sus números."""
-    parts = [f'<circle cx="{_CENTER}" cy="{_CENTER}" r="{r_houses_in}" fill="none" '
-             f'stroke="{_TEXT}" stroke-width="0.75" opacity="0.3"/>']
+def _draw_houses(chart: BirthChart, ascendant_deg: float, r_hub: float, r_label: float) -> str:
+    """
+    Dibuja las 12 líneas de casas como radios completos, desde el hub central
+    hasta el anillo zodiacal, con su número de casa cerca del anillo exterior.
+    """
+    parts = [f'<circle cx="{_CENTER}" cy="{_CENTER}" r="{r_hub}" fill="none" '
+             f'stroke="{_TEXT}" stroke-width="0.75" opacity="0.35"/>']
     for house in chart.houses:
-        x1, y1 = _polar_to_xy(house.longitude, r_houses_in, ascendant_deg)
+        x1, y1 = _polar_to_xy(house.longitude, r_hub, ascendant_deg)
         x2, y2 = _polar_to_xy(house.longitude, _R_ZODIAC_IN, ascendant_deg)
-        is_angle = house.house_number in (1, 4, 7, 10)
+        is_angle = house.house_number in (1, 4, 7, 10)  # ejes ASC/IC/DSC/MC
         parts.append(f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" '
-                     f'stroke="{_TEXT}" stroke-width="{1.8 if is_angle else 0.75}" opacity="{0.5 if is_angle else 0.25}"/>')
-        num_x, num_y = _polar_to_xy(house.longitude + 15, r_houses_in - 22, ascendant_deg)
-        parts.append(f'<text x="{num_x:.1f}" y="{num_y:.1f}" font-size="15" fill="{_TEXT}" '
-                     f'text-anchor="middle" dominant-baseline="middle" opacity="0.5" font-weight="bold">{house.house_number}</text>')
+                     f'stroke="{_TEXT}" stroke-width="{1.6 if is_angle else 0.75}" opacity="{0.45 if is_angle else 0.25}"/>')
+        num_x, num_y = _polar_to_xy(house.longitude + 15, r_label, ascendant_deg)
+        parts.append(f'<text x="{num_x:.1f}" y="{num_y:.1f}" font-size="14" fill="{_TEXT}" '
+                     f'text-anchor="middle" dominant-baseline="middle" opacity="0.55" font-weight="bold">{house.house_number}</text>')
+    return "".join(parts)
+
+
+def _draw_angle_axes(ascendant_deg: float, midheaven_deg: float | None) -> str:
+    """
+    Dibuja el eje ASC-DSC (siempre la línea horizontal en nuestra convención,
+    ya que el Ascendente se ancla a la izquierda) y el eje MC-IC, ambos en
+    rojo y atravesando toda la carta, como en una carta profesional clásica.
+    """
+    parts = []
+    asc_x1, asc_y1 = _polar_to_xy(ascendant_deg, _R_OUTER, ascendant_deg)
+    asc_x2, asc_y2 = _polar_to_xy(ascendant_deg + 180, _R_OUTER, ascendant_deg)
+    parts.append(f'<line x1="{asc_x1:.1f}" y1="{asc_y1:.1f}" x2="{asc_x2:.1f}" y2="{asc_y2:.1f}" '
+                 f'stroke="{_AXIS_RED}" stroke-width="1.6" opacity="0.5"/>')
+
+    if midheaven_deg is not None:
+        mc_x1, mc_y1 = _polar_to_xy(midheaven_deg, _R_OUTER, ascendant_deg)
+        mc_x2, mc_y2 = _polar_to_xy(midheaven_deg + 180, _R_OUTER, ascendant_deg)
+        parts.append(f'<line x1="{mc_x1:.1f}" y1="{mc_y1:.1f}" x2="{mc_x2:.1f}" y2="{mc_y2:.1f}" '
+                     f'stroke="{_AXIS_RED}" stroke-width="1.6" opacity="0.5"/>')
     return "".join(parts)
 
 
@@ -153,19 +178,20 @@ def _draw_planets(planets, radius: float, ascendant_deg: float, color: str) -> s
             parts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="14" fill="{_BG}" opacity="0.92"/>')
             parts.append(f'<text x="{x:.1f}" y="{y:.1f}" font-size="24" fill="{color}" '
                          f'text-anchor="middle" dominant-baseline="central" font-weight="bold">{symbol}</text>')
+            retro_marker = "℞" if getattr(p, "is_retrograde", False) else ""
             deg_x, deg_y = _polar_to_xy(p.longitude, radius + radial_offset + 20, ascendant_deg)
             parts.append(f'<text x="{deg_x:.1f}" y="{deg_y:.1f}" font-size="10" fill="{_TEXT}" '
                          f'text-anchor="middle" dominant-baseline="middle" opacity="0.65">'
-                         f'{round(p.degree_in_sign)}°</text>')
+                         f'{round(p.degree_in_sign)}°{retro_marker}</text>')
     return "".join(parts)
 
 
-def _draw_aspect_lines(chart: BirthChart, ascendant_deg: float, radius: float) -> str:
+def _draw_aspect_web(chart: BirthChart, ascendant_deg: float, r_hub: float) -> str:
     """
-    Dibuja las líneas de aspectos natales entre planetas, dentro del círculo de casas.
-    Solo se dibujan aspectos con orbe ajustado (<=7°) para mantener la carta legible;
-    el listado completo de aspectos sigue disponible en los datos, esto es solo la
-    representación visual. Grosor y opacidad reflejan tipo de aspecto y exactitud.
+    Dibuja las líneas de aspectos natales como una telaraña que converge en
+    el hub central — cada línea une los puntos del hub correspondientes a la
+    posición angular de cada planeta, en vez de unir los símbolos directamente.
+    Solo se dibujan aspectos con orbe ajustado (<=7°) para mantener la carta legible.
     """
     parts = []
     for aspect in chart.aspects:
@@ -175,8 +201,8 @@ def _draw_aspect_lines(chart: BirthChart, ascendant_deg: float, radius: float) -
         p2 = chart.get_planet(aspect.planet2)
         if not p1 or not p2:
             continue
-        x1, y1 = _polar_to_xy(p1.longitude, radius, ascendant_deg)
-        x2, y2 = _polar_to_xy(p2.longitude, radius, ascendant_deg)
+        x1, y1 = _polar_to_xy(p1.longitude, r_hub, ascendant_deg)
+        x2, y2 = _polar_to_xy(p2.longitude, r_hub, ascendant_deg)
         color = _ASPECT_COLORS.get(aspect.aspect_type, _TEXT)
         width = _ASPECT_WIDTHS.get(aspect.aspect_type, 1.5)
         opacity = 0.85 - (aspect.orb / 7) * 0.4
@@ -205,10 +231,7 @@ def _draw_transit_aspect_lines(transit_planets, natal_chart: BirthChart, transit
 
 
 def _draw_legend(aspects_present: set) -> str:
-    """
-    Pequeña leyenda de colores de aspectos, solo con los tipos que realmente
-    aparecen en esta carta — evita listar 5 tipos si solo hay 2 presentes.
-    """
+    """Pequeña leyenda de colores de aspectos, solo con los tipos presentes en esta carta."""
     if not aspects_present:
         return ""
     parts = []
@@ -228,14 +251,15 @@ def _draw_legend(aspects_present: set) -> str:
 def render_birth_chart_svg(chart: BirthChart) -> str:
     """
     Genera el SVG de una carta natal simple: rueda zodiacal + casas +
-    planetas natales + líneas de aspectos.
+    eje ASC/MC + telaraña de aspectos + planetas natales.
     """
     ascendant_deg = chart.ascendant if chart.ascendant is not None else 0.0
 
     svg = [_svg_header()]
     svg.append(_draw_zodiac_ring(ascendant_deg))
-    svg.append(_draw_houses(chart, ascendant_deg, _R_SOLO_HOUSES_IN))
-    svg.append(_draw_aspect_lines(chart, ascendant_deg, _R_SOLO_ASPECTS))
+    svg.append(_draw_houses(chart, ascendant_deg, _R_HUB_SOLO, _R_SOLO_HOUSE_LABELS))
+    svg.append(_draw_angle_axes(ascendant_deg, chart.midheaven))
+    svg.append(_draw_aspect_web(chart, ascendant_deg, _R_HUB_SOLO))
     svg.append(_draw_planets(chart.planets, _R_SOLO_PLANETS, ascendant_deg, _TEAL))
 
     asc_x, asc_y = _polar_to_xy(ascendant_deg, _R_OUTER + 20, ascendant_deg)
@@ -261,7 +285,8 @@ def render_transit_chart_svg(natal_chart: BirthChart, transit_planets, transit_a
 
     svg = [_svg_header()]
     svg.append(_draw_zodiac_ring(ascendant_deg))
-    svg.append(_draw_houses(natal_chart, ascendant_deg, _R_HOUSES_IN))
+    svg.append(_draw_houses(natal_chart, ascendant_deg, _R_HUB_BIWHEEL, _R_HOUSE_LABELS_BIWHEEL))
+    svg.append(_draw_angle_axes(ascendant_deg, natal_chart.midheaven))
     svg.append(_draw_transit_aspect_lines(transit_planets, natal_chart, transit_aspects, ascendant_deg))
 
     svg.append(f'<circle cx="{_CENTER}" cy="{_CENTER}" r="{(_R_NATAL_PLANETS + _R_TRANSIT_RING) / 2 + 6:.1f}" '

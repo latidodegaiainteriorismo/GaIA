@@ -1,3 +1,4 @@
+import json
 import logging
 from flask import Blueprint, request, jsonify
 from db import db_all, db_one, db_run
@@ -63,6 +64,94 @@ def _get_cross_memory(user_id: str, current_conv_id: str = None,
         return ''
     return '\n\n## MEMORIA DE CONVERSACIONES ANTERIORES\n' + '\n\n'.join(parts) + '\n---\n'
 
+# ── Fuentes reales por mensaje — para que GaIA pueda ser honesta cuando le ──
+# preguntan "¿en qué te basas?" en vez de improvisar una cita plausible ──────
+
+_SOURCE_QUESTION_TRIGGERS = [
+    "en qué documento", "en que documento", "en qué documentos", "en que documentos",
+    "en qué te basas", "en que te basas", "en qué se basa", "en que se basa",
+    "de dónde sacas", "de donde sacas", "de dónde sale eso", "de donde sale eso",
+    "de dónde salió eso", "de donde salio eso",
+    "cuál es tu fuente", "cual es tu fuente", "cuáles son tus fuentes", "cuales son tus fuentes",
+    "qué fuente", "que fuente", "qué fuentes", "que fuentes",
+    "en qué basas", "en que basas", "en qué te basaste", "en que te basaste",
+    "de qué documento", "de que documento", "según qué documento", "segun que documento",
+    "qué documento usaste", "que documento usaste",
+]
+
+
+def _is_source_question(message: str) -> bool:
+    """
+    Detecta si el usuario pregunta por las fuentes/documentos usados en la
+    respuesta ANTERIOR de GaIA — para tratar este turno de forma especial
+    (ver _format_sources_question_block) en vez de lanzar una búsqueda RAG
+    nueva sobre el texto literal de esta pregunta-meta, que nunca encontrará
+    nada relevante y puede llevar a GaIA a rellenar el hueco con una cita
+    inventada.
+    """
+    msg_lower = message.lower()
+    return any(t in msg_lower for t in _SOURCE_QUESTION_TRIGGERS)
+
+
+def _get_last_assistant_sources(conv_id: str) -> list:
+    """
+    Recupera las fuentes reales guardadas del último mensaje de GaIA en esta
+    conversación (columna messages.sources, ver migración SQL). Devuelve
+    lista vacía si no hay mensaje previo, o si ese mensaje no tiene fuentes
+    guardadas (NULL — por ejemplo, mensajes anteriores a esta funcionalidad).
+    """
+    row = db_one(
+        "SELECT sources FROM messages WHERE conversation_id = %s AND role = 'assistant' "
+        "ORDER BY created_at DESC LIMIT 1",
+        (conv_id,)
+    )
+    if not row or not row.get('sources'):
+        return []
+    sources = row['sources']
+    if isinstance(sources, str):
+        try:
+            sources = json.loads(sources)
+        except Exception:
+            return []
+    return sources or []
+
+
+def _format_sources_question_block(sources: list) -> str:
+    """
+    Construye la instrucción que reemplaza al RAG normal cuando el usuario
+    pregunta por las fuentes de la respuesta anterior. Le da a GaIA la lista
+    REAL (verificada por el sistema) en vez de dejar que adivine o invente.
+    """
+    if sources:
+        lista = "\n".join(f"- {s}" for s in sources)
+        return (
+            "\n## PREGUNTA SOBRE TUS FUENTES REALES\n"
+            "El usuario te pregunta en qué te basaste para tu respuesta anterior. "
+            "Estas son las fuentes REALES que el sistema usó para construir esa "
+            f"respuesta (verificadas, no las cambies ni inventes otras):\n{lista}\n"
+            "Cita únicamente estas fuentes, con naturalidad. No menciones ningún "
+            "documento que no esté en esta lista.\n"
+        )
+    return (
+        "\n## PREGUNTA SOBRE TUS FUENTES REALES\n"
+        "El usuario te pregunta en qué te basaste para tu respuesta anterior. El "
+        "sistema confirma que esa respuesta NO usó ningún documento concreto de tu "
+        "Knowledge — se respondió desde tu comprensión general. Dilo con "
+        "naturalidad y honestidad; no inventes ni menciones ningún documento como "
+        "si lo hubieras usado.\n"
+    )
+
+
+def _extract_sources_used(chunks: list, web_context: str) -> list:
+    """Nombres de documento únicos realmente usados en este turno, para guardar."""
+    sources = sorted({
+        c.get('source', '').split('/')[-1].replace('.txt', '')
+        for c in chunks if c.get('source')
+    })
+    if web_context:
+        sources.append('Búsqueda web')
+    return sources
+
 # ── Ruta principal ─────────────────────────────────────────────────────────────
 
 @chat_bp.route('/chat', methods=['POST'])
@@ -81,11 +170,6 @@ def chat():
     logger.info(f'[CHAT] user={user_id} conv={conv_id} voice={voice_mode} len={len(message)}')
 
     # ── Modo desarrollador — comandos especiales de configuración ───────────
-    # Solo el email configurado en config.DEVELOPER_EMAIL puede usar estos
-    # comandos. Si se reconoce uno, se ejecuta directamente y se responde sin
-    # pasar por Groq (es una acción determinista de configuración, no una
-    # conversación). El resto de mensajes del desarrollador siguen el flujo
-    # normal, pero con un contexto adicional que le identifica ante GaIA.
     user_is_developer = bool(user_id) and is_developer(user_id)
 
     if user_is_developer:
@@ -147,27 +231,29 @@ def chat():
             )
             db_run("UPDATE conversations SET updated_at = NOW() WHERE id = %s", (conv_id,))
 
-    # ── Knowledge RAG v6.0 — Mónica siempre + routing por documento + web ────
-    chunks, web_context = search_knowledge(message)
-    knowledge_context   = format_knowledge_context(chunks, web_context)
+    # ── ¿Pregunta por las fuentes de la respuesta anterior? ──────────────────
+    # Si es así, saltamos el RAG normal por completo para este turno — una
+    # búsqueda nueva sobre el texto de esta pregunta-meta nunca encontraría
+    # nada relevante, y dejaría a GaIA rellenando el hueco con una cita
+    # inventada. En su lugar, le damos la lista REAL de fuentes guardadas
+    # del mensaje anterior (o le confirmamos que no hubo ninguna).
+    is_source_question = _is_source_question(message)
+
+    if is_source_question and not temporary and conv_id:
+        chunks, web_context = [], ''
+        knowledge_context = ''
+        previous_sources = _get_last_assistant_sources(conv_id)
+        sources_question_block = _format_sources_question_block(previous_sources)
+    else:
+        # ── Knowledge RAG v6.1 — Mónica siempre + routing por documento + web
+        chunks, web_context = search_knowledge(message)
+        knowledge_context   = format_knowledge_context(chunks, web_context)
+        sources_question_block = ''
 
     # ── Astrología — carta natal + tránsitos del usuario, si los tiene ──────
-    # Solo aplica a usuarios autenticados con carta guardada; en modo temporal
-    # o sin carta natal, format_astrology_context() devuelve '' y no afecta nada.
-    # Si el usuario menciona una fecha concreta ("mis tránsitos el 15 de agosto"),
-    # los tránsitos se calculan para ese día en vez de para "ahora mismo". Si
-    # menciona a otra persona guardada ("la carta de mi hijo Marco"), se usa
-    # esa carta en vez de la propia.
-    #
-    # IMPORTANTE: solo construimos este bloque si el mensaje realmente parece
-    # ir de astrología (is_astrology_related) o si pide calcular una carta
-    # nueva explícitamente. Antes se inyectaba SIEMPRE que hubiera carta
-    # guardada, sin importar el tema — eso infla el prompt en cada turno y
-    # puede hacer que la petición supere el límite de tokens de Groq (413).
     astrology_context = ''
     new_chart_suffix = ''
     if user_id:
-        # ¿Pide calcular una carta nueva de otra persona con todos los datos incluidos?
         new_chart_request = extract_new_chart_request(message)
         if new_chart_request:
             created = create_birth_chart_for_user(
@@ -205,8 +291,7 @@ def chat():
 
         if needs_onboarding(user_id):
             onboarding_suffix = format_onboarding_prompt_instruction()
-            mark_onboarding_completed(user_id)  # se marca YA: la pregunta solo se hace una vez,
-                                                  # con independencia de si el usuario responde
+            mark_onboarding_completed(user_id)
         else:
             detected = detect_new_personal_data(user_id, message)
             if detected:
@@ -224,7 +309,8 @@ def chat():
             "tu ADN directamente por chat.\n\n"
         )
 
-    extra_prefix = developer_prefix + profile_context + onboarding_suffix + new_data_suffix + new_chart_suffix
+    extra_prefix = (developer_prefix + profile_context + onboarding_suffix +
+                    new_data_suffix + new_chart_suffix + sources_question_block)
 
     try:
         gaia_text = call_groq(history, cross_memory, knowledge_context=knowledge_context,
@@ -245,12 +331,13 @@ def chat():
     if user_id and not temporary:
         gaia_text = extract_and_apply_save_marks(user_id, gaia_text)
 
-    # ── Guardar respuesta ────────────────────────────────────────────────────
+    # ── Guardar respuesta (con las fuentes reales usadas en este turno) ─────
     if not temporary and conv_id:
+        sources_used = _extract_sources_used(chunks, web_context)
         db_run(
-            "INSERT INTO messages (conversation_id, user_id, role, content) "
-            "VALUES (%s, %s, %s, %s)",
-            (conv_id, user_id, 'assistant', gaia_text)
+            "INSERT INTO messages (conversation_id, user_id, role, content, sources) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (conv_id, user_id, 'assistant', gaia_text, json.dumps(sources_used))
         )
 
     # ── TTS ──────────────────────────────────────────────────────────────────

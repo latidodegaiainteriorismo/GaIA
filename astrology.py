@@ -140,7 +140,14 @@ def delete_birth_chart_for_user(user_id: str, person_label: str) -> bool:
 
 
 def _dict_to_birth_chart(chart_dict: dict) -> BirthChart:
-    """Reconstruye un objeto BirthChart a partir del dict guardado en DB."""
+    """
+    Reconstruye un objeto BirthChart a partir del dict guardado en DB.
+
+    IMPORTANTE: houses y aspects deben reconstruirse aquí explícitamente —
+    si no se pasan al constructor, BirthChart los deja como listas vacías
+    por defecto, y el SVG se dibuja sin líneas de aspectos ni casas reales
+    (solo el eje ASC/MC, que sí viene de otros campos).
+    """
     planets = [
         PlanetPosition(
             name=p["name"], longitude=p["longitude"], sign=p["sign"],
@@ -148,12 +155,25 @@ def _dict_to_birth_chart(chart_dict: dict) -> BirthChart:
             house=p.get("house"),
         ) for p in chart_dict["planets"]
     ]
+    houses = [
+        HouseCusp(
+            house_number=h["house_number"], longitude=h["longitude"], sign=h["sign"],
+        ) for h in chart_dict.get("houses", [])
+    ]
+    aspects = [
+        Aspect(
+            planet1=a["planet1"], planet2=a["planet2"], aspect_type=a["aspect_type"],
+            orb=a["orb"], exact_angle=a["exact_angle"],
+        ) for a in chart_dict.get("aspects", [])
+    ]
     return BirthChart(
         birth_datetime=datetime.fromisoformat(chart_dict["birth_datetime"]),
         latitude=chart_dict["latitude"],
         longitude=chart_dict["longitude"],
         location_name=chart_dict.get("location_name"),
         planets=planets,
+        houses=houses,
+        aspects=aspects,
         ascendant=chart_dict["ascendant"]["absolute_longitude"] if chart_dict.get("ascendant") else None,
         midheaven=chart_dict["midheaven"]["absolute_longitude"] if chart_dict.get("midheaven") else None,
     )

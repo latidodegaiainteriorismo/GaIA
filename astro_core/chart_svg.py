@@ -28,8 +28,8 @@ _R_ZODIAC_IN = 305      # borde interior de la banda de signos
 
 # Hub de aspectos — bastante más grande que en v3, para que el patrón de
 # líneas se distinga con claridad (las casas siguen yendo hasta el centro).
-_R_HUB_SOLO = 150
-_R_HUB_BIWHEEL = 95
+_R_HUB_SOLO = 195
+_R_HUB_BIWHEEL = 120
 
 # Radios para carta natal SIMPLE
 _R_SOLO_PLANETS = 235

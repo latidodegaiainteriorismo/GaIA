@@ -112,6 +112,9 @@ def get_birth_chart_for_user(user_id: str, person_label: str = DEFAULT_PERSON_LA
     chart_dict = row["full_chart"]
     if isinstance(chart_dict, str):
         chart_dict = json.loads(chart_dict)
+    # Generalidades se calculan al vuelo (no se guardan en DB) — así, cartas
+    # ya creadas antes de este cambio también las obtienen automáticamente.
+    chart_dict["generalidades"] = calculate_generalidades(_dict_to_birth_chart(chart_dict))
     return chart_dict
 
 

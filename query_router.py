@@ -136,8 +136,16 @@ REGLAS:
   (ejemplo: eventos astronómicos de hoy, noticias, datos técnicos externos).
   Para preguntas espirituales, existenciales o de crecimiento personal,
   needs_web siempre debe ser false, aunque no haya documento que encaje.
-- "keywords": 3-6 palabras o conceptos clave de la pregunta, en español,
-  útiles para una búsqueda de texto completo (sinónimos incluidos).
+- "keywords": 7-8 palabras o conceptos clave relacionados con la pregunta, en
+  español. IMPORTANTE: no te limites a repetir literalmente las palabras de
+  la pregunta del usuario — piensa en cómo podría estar redactado el
+  contenido real de un documento sobre este tema (sinónimos, términos
+  técnicos relacionados, conceptos asociados). La búsqueda encuentra
+  fragmentos que contengan CUALQUIERA de estas palabras (no todas a la vez),
+  así que cuantos más ángulos distintos cubras, mejor será la búsqueda.
+  Ejemplo: para "háblame de la era de Acuario" → ["era de acuario", "acuario",
+  "nueva era", "cambio de era", "transición planetaria", "consciencia
+  colectiva", "astrología", "humanidad"]
 
 Responde ÚNICAMENTE con JSON válido, sin texto adicional, sin markdown:
 {{"documents": ["..."], "keywords": ["...", "..."], "needs_web": false}}

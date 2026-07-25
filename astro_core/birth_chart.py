@@ -15,9 +15,9 @@ from astro_core.extra_bodies import calculate_extra_bodies
 # Definición de aspectos mayores: (nombre, ángulo exacto, orbe permitido en grados)
 MAJOR_ASPECTS = [
     ("conjunción", 0, 10),
-    ("sextil", 60, 10),
+    ("sextil", 60, 8),
     ("cuadratura", 90, 10),
-    ("trígono", 120, 10),
+    ("trígono", 120, 8),
     ("oposición", 180, 10),
 ]
 

@@ -17,26 +17,27 @@ GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '')
 #   openai/gpt-oss-20b                        :  8K TPM / 200K TPD
 #   qwen/qwen3.6-27b                          :  8K TPM / 200K TPD
 #
-# NOTA (jul-2026): la familia GPT-OSS / Qwen3.6 tiene un TPM (8K) más bajo de
-# lo que se pensaba inicialmente — con el ADN (~4-5K tokens) + RAG + memoria
-# cruzada + perfil de usuario, una sola petición puede consumir gran parte de
-# esa cuota, provocando 413 en los tres modelos de golpe tras pocos mensajes
-# seguidos. Se migra la cadena principal a llama-4-scout / llama-3.3, que
-# tienen bastante más margen (30K y 12K TPM respectivamente).
+# NOTA (25-jul-2026): meta-llama/llama-4-scout-17b-16e-instruct fue retirado
+# por Groq el 17-jul-2026 (404 model_not_found). llama-3.3-70b-versatile y
+# llama-3.1-8b-instant también están deprecados, con apagado programado para
+# el 16-ago-2026 — así que se migran también, aunque técnicamente sigan
+# funcionando por ahora. Cadena nueva usando los 3 modelos recomendados por
+# Groq como reemplazo estable (ver console.groq.com/docs/deprecations).
+#
+# Aviso: estos 3 modelos comparten el mismo límite bajo de TPM (8K) que
+# teníamos con gpt-oss-120b/20b y qwen3.6-27b antes de encontrar
+# llama-4-scout — el margen es más ajustado que con el modelo anterior.
 GROQ_MODELS_GENERAL = [
-    'meta-llama/llama-4-scout-17b-16e-instruct',  # principal — mejor margen de TPM/TPD con diferencia
-    'llama-3.3-70b-versatile',                    # fallback — buena calidad, TPM más ajustado
-    'llama-3.1-8b-instant',                       # último recurso — rápido, TPD muy alto (500K)
+    'openai/gpt-oss-120b',
+    'qwen/qwen3.6-27b',
+    'openai/gpt-oss-20b',
 ]
 
 GROQ_MODELS_ASTROLOGY = [
-    'llama-3.1-8b-instant',                       # principal — rápido y barato para datos estructurados
-    'meta-llama/llama-4-scout-17b-16e-instruct',  # fallback — mucho margen si el pequeño se satura
-    'llama-3.3-70b-versatile',                    # último recurso
+    'openai/gpt-oss-20b',
+    'qwen/qwen3.6-27b',
+    'openai/gpt-oss-120b',
 ]
-
-# Retrocompatibilidad: código legado que aún importe GROQ_MODEL directamente
-# sigue funcionando (usa el principal de la cadena general).
 GROQ_MODEL          = GROQ_MODELS_GENERAL[0]
 GROQ_MODEL_FALLBACK = GROQ_MODELS_GENERAL[1]
 

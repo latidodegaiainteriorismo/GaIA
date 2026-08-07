@@ -165,22 +165,33 @@ def _is_source_question(message: str) -> bool:
     return any(t in msg_lower for t in _SOURCE_QUESTION_TRIGGERS)
 
 
+# Verbos/frases que indican que el usuario pide CONTENIDO nuevo, no solo la
+# fuente de algo ya dicho. Si aparecen junto a un trigger de fuentes, el
+# mensaje es "combinado" — sin esto, la longitud por sí sola clasificaba mal:
+# "háblame de X y dime en qué te basas" mide menos de 90 caracteres pero
+# claramente pide contenido nuevo, no solo la fuente del turno anterior.
+_CONTENT_REQUEST_CUES = [
+    "háblame de", "hablame de", "cuéntame de", "cuentame de", "cuéntame sobre",
+    "cuentame sobre", "explícame", "explicame", "información sobre",
+    "informacion sobre", "sabes de", "sabes sobre", "dime sobre", "qué es",
+    "que es", "qué sabes de", "que sabes de", "enséñame", "ensename",
+]
+
+
 def _is_pure_source_question(message: str) -> bool:
     """
-    True solo si el mensaje es (casi) exclusivamente una pregunta sobre fuentes.
-
-    Si viene COMBINADA con una petición de contenido nuevo ("háblame de X y
-    dime en qué te basas"), no queremos saltarnos el RAG: el usuario también
-    pide contenido, y las fuentes a citar son las de ESE contenido nuevo, no
-    las del turno anterior. Sin esta distinción, un mensaje combinado hacía
-    que se saltara la búsqueda por completo (rag=False) y GaIA respondía sin
-    ningún documento real delante.
+    True solo si el mensaje es (casi) exclusivamente una pregunta sobre
+    fuentes — no si, además, pide contenido nuevo sobre un tema (ej.
+    "háblame de X y dime en qué te basas"). En ese caso combinado NO
+    queremos saltarnos el RAG: el usuario también quiere contenido nuevo, y
+    las fuentes a citar son las de ESE contenido, no las del turno anterior.
     """
     if not _is_source_question(message):
         return False
+    msg_lower = message.lower()
+    if any(cue in msg_lower for cue in _CONTENT_REQUEST_CUES):
+        return False
     return len(message.strip()) <= 90
-
-
 def _get_last_assistant_sources(conv_id: str) -> list:
     """
     Recupera las fuentes reales guardadas del último mensaje de GaIA en esta

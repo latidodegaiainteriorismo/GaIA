@@ -210,8 +210,22 @@ def detect_new_personal_data(user_id: str, message: str) -> str | None:
                 "role": "user",
                 "content": message
             }],
+            # NOTA (13-ago-2026): GROQ_MODEL_FALLBACK apunta a un modelo Qwen3
+            # (ver config.py), que también "razona" internamente por defecto,
+            # igual que los modelos gpt-oss del router (ver query_router.py
+            # para el diagnóstico completo). Con max_tokens=40, el margen
+            # antiguo era mínimo — casi con toda seguridad no dejaba nada de
+            # presupuesto para la respuesta tras el razonamiento, y esta
+            # detección llevaba tiempo fallando en silencio (el except de
+            # abajo se traga cualquier error y simplemente no detecta nada,
+            # así que no se veía en logs como fallo explícito). Los modelos
+            # Qwen3 en Groq aceptan reasoning_effort="none" para desactivar
+            # el razonamiento por completo — aquí no hace ninguna falta,
+            # es una clasificación simple contra una lista de datos ya
+            # guardados. Se sube también max_tokens por margen de seguridad.
+            max_tokens=150,
             temperature=0,
-            max_tokens=40,
+            reasoning_effort="none",
         )
         result = response.choices[0].message.content.strip()
         if result.upper() == "NONE" or not result:

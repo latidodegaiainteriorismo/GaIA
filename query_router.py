@@ -148,20 +148,28 @@ Pregunta del usuario: {message}"""
         response = _client.chat.completions.create(
             model=GROQ_MODEL,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=200,
+            # NOTA (13-ago-2026): GROQ_MODEL apunta ahora a un modelo de la
+            # familia gpt-oss (ver config.py), que por defecto "razona"
+            # internamente (chain-of-thought) antes de escribir la
+            # respuesta — y esos tokens de razonamiento se descuentan del
+            # MISMO max_tokens que el de la respuesta final. Con
+            # max_tokens=200 y razonamiento en modo "medium" (el valor por
+            # defecto de Groq para estos modelos), el modelo agotaba el
+            # presupuesto pensando y no le quedaba espacio para escribir el
+            # JSON — de ahí los fallos vistos en logs: contenido vacío o
+            # cortado a mitad de una cadena. reasoning_effort="low" reduce
+            # ese consumo al mínimo para esta tarea (que no necesita
+            # razonamiento complejo, solo clasificar contra un catálogo
+            # fijo), y max_tokens=400 da margen de sobra para el JSON
+            # completo aunque el modelo decida razonar algo de todos modos.
+            max_tokens=400,
             temperature=0.2,
+            reasoning_effort="low",
         )
         raw = response.choices[0].message.content.strip()
         # Limpieza por si Groq envuelve en markdown pese a la instrucción
         raw = raw.replace("```json", "").replace("```", "").strip()
 
-        # NOTA (13-ago-2026): tras la migración de modelo (llama-4-scout →
-        # gpt-oss-120b), empezaron a aparecer fallos de parseo JSON aquí
-        # ("Unterminated string..."). Se añade este log para capturar el
-        # texto crudo exacto que devuelve el modelo la próxima vez que
-        # falle, y así saber si hay que subir max_tokens, ajustar el
-        # prompt, o si el modelo simplemente añade texto extra alrededor
-        # del JSON que rompe el parseo.
         try:
             parsed = json.loads(raw)
         except json.JSONDecodeError as e:

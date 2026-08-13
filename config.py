@@ -38,8 +38,25 @@ GROQ_MODELS_ASTROLOGY = [
     'qwen/qwen3.6-27b',
     'openai/gpt-oss-120b',
 ]
-GROQ_MODEL          = GROQ_MODELS_GENERAL[0]
-GROQ_MODEL_FALLBACK = GROQ_MODELS_GENERAL[1]
+
+# NOTA (13-ago-2026): GROQ_MODEL se usa para las llamadas de PRE-PROCESO
+# (query_router.py, detección de perfil en user_profile.py, expansión de
+# memoria) — nunca para la respuesta final de GaIA, que siempre recorre
+# GROQ_MODELS_GENERAL desde el principio. Antes GROQ_MODEL apuntaba a
+# GROQ_MODELS_GENERAL[0] (gpt-oss-120b) — el MISMO modelo que la respuesta
+# principal intenta primero — así que un solo mensaje del usuario disparaba
+# dos llamadas distintas al mismo modelo, compitiendo por el mismo cupo de
+# 8K TPM en el mismo minuto. Eso causó, el mismo día, fallos de router (JSON
+# cortado a mitad de generación por falta de cupo) y 413 en cadena en los
+# tres modelos a la vez.
+#
+# Apunta ahora al último de la cadena general (el que menos se usa, porque
+# solo entra en juego si los otros dos ya devolvieron 429/413) para
+# minimizar la colisión. No la elimina del todo — solo hay 3 modelos
+# estables disponibles en total en el tier gratuito — pero reduce mucho la
+# probabilidad de que el router y la respuesta principal choquen a la vez.
+GROQ_MODEL          = GROQ_MODELS_GENERAL[2]   # gpt-oss-20b
+GROQ_MODEL_FALLBACK = GROQ_MODELS_GENERAL[1]   # qwen3.6-27b
 
 # ── BASE DE DATOS ─────────────────────────────────────────────────────────────
 DATABASE_URL = os.environ.get('DATABASE_URL', '')
@@ -64,3 +81,5 @@ MAX_CONV_TOKENS        = 1200   # Comprimir conversación si supera este límite
 MEMORY_TOP_K           = 3      # Top-K episodios relevantes del usuario
 KNOWLEDGE_TOP_K        = 2      # Top-K chunks de la base de conocimiento (bajado de 5 para ahorrar tokens/día en Groq)
 IMPORTANCE_THRESHOLD   = 7      # Mínimo (sobre 10) para guardar episodio
+
+

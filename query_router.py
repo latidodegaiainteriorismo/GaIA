@@ -136,16 +136,8 @@ REGLAS:
   (ejemplo: eventos astronómicos de hoy, noticias, datos técnicos externos).
   Para preguntas espirituales, existenciales o de crecimiento personal,
   needs_web siempre debe ser false, aunque no haya documento que encaje.
-- "keywords": 7-8 palabras o conceptos clave relacionados con la pregunta, en
-  español. IMPORTANTE: no te limites a repetir literalmente las palabras de
-  la pregunta del usuario — piensa en cómo podría estar redactado el
-  contenido real de un documento sobre este tema (sinónimos, términos
-  técnicos relacionados, conceptos asociados). La búsqueda encuentra
-  fragmentos que contengan CUALQUIERA de estas palabras (no todas a la vez),
-  así que cuantos más ángulos distintos cubras, mejor será la búsqueda.
-  Ejemplo: para "háblame de la era de Acuario" → ["era de acuario", "acuario",
-  "nueva era", "cambio de era", "transición planetaria", "consciencia
-  colectiva", "astrología", "humanidad"]
+- "keywords": 3-6 palabras o conceptos clave de la pregunta, en español,
+  útiles para una búsqueda de texto completo (sinónimos incluidos).
 
 Responde ÚNICAMENTE con JSON válido, sin texto adicional, sin markdown:
 {{"documents": ["..."], "keywords": ["...", "..."], "needs_web": false}}
@@ -159,9 +151,17 @@ Pregunta del usuario: {message}"""
             max_tokens=200,
             temperature=0.2,
         )
-       raw = response.choices[0].message.content.strip()
+        raw = response.choices[0].message.content.strip()
         # Limpieza por si Groq envuelve en markdown pese a la instrucción
         raw = raw.replace("```json", "").replace("```", "").strip()
+
+        # NOTA (13-ago-2026): tras la migración de modelo (llama-4-scout →
+        # gpt-oss-120b), empezaron a aparecer fallos de parseo JSON aquí
+        # ("Unterminated string..."). Se añade este log para capturar el
+        # texto crudo exacto que devuelve el modelo la próxima vez que
+        # falle, y así saber si hay que subir max_tokens, ajustar el
+        # prompt, o si el modelo simplemente añade texto extra alrededor
+        # del JSON que rompe el parseo.
         try:
             parsed = json.loads(raw)
         except json.JSONDecodeError as e:

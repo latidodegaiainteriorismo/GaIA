@@ -159,10 +159,14 @@ Pregunta del usuario: {message}"""
             max_tokens=200,
             temperature=0.2,
         )
-        raw = response.choices[0].message.content.strip()
+       raw = response.choices[0].message.content.strip()
         # Limpieza por si Groq envuelve en markdown pese a la instrucción
         raw = raw.replace("```json", "").replace("```", "").strip()
-        parsed = json.loads(raw)
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as e:
+            logger.warning(f"[router] JSON inválido, contenido crudo: {raw!r}")
+            raise e
 
         result = {
             "documents": parsed.get("documents", []) or [],

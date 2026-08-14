@@ -26,6 +26,8 @@ CORS(app)
 app.register_blueprint(auth_bp)
 app.register_blueprint(conversations_bp)
 app.register_blueprint(chat_bp)
+from routes.maintenance import maintenance_bp
+app.register_blueprint(maintenance_bp)
 app.register_blueprint(ingest_bp)
 app.register_blueprint(astrology_bp)
 app.register_blueprint(dev_bp)

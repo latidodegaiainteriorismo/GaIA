@@ -16,6 +16,7 @@ from user_profile import (
     format_onboarding_prompt_instruction, detect_new_personal_data,
     format_new_data_detected_instruction, extract_and_apply_save_marks,
 )
+from synthesis import format_synthesis_context
 
 logger  = logging.getLogger(__name__)
 chat_bp = Blueprint('chat', __name__)
@@ -24,8 +25,8 @@ chat_bp = Blueprint('chat', __name__)
 #
 # Los modelos actuales de Groq (gpt-oss-120b / qwen3.6-27b / gpt-oss-20b) tienen
 # un límite de 8.000 tokens por minuto. El ADN de GaIA ya ocupa ~4.500 tokens,
-# así que todo lo demás (perfil + memoria + knowledge + astrología + historial +
-# la propia respuesta) tiene que caber en el hueco que queda.
+# así que todo lo demás (perfil + síntesis + memoria + knowledge + astrología +
+# historial + la propia respuesta) tiene que caber en el hueco que queda.
 #
 # Antes de esta fase no había ningún control: si coincidían knowledge grande +
 # astrología + historial largo, el prompt se pasaba del límite y Groq devolvía
@@ -44,6 +45,13 @@ _MAX_CONTEXT_TOKENS = 2600   # presupuesto para TODO lo que no es el ADN ni la r
 # El historial reciente nunca se recorta aquí (se controla aparte, por número
 # de mensajes) — es lo último que se debe sacrificar, porque sin él GaIA pierde
 # el hilo de lo que se está hablando ahora mismo.
+#
+# La síntesis viva (FASE 1) NO entra en esta lista a propósito: es corta
+# (~450 palabras ≈ 600 tokens) y es la pieza de mayor impacto de todo el
+# contexto — es lo que hace que GaIA "conozca" al usuario sin depender de
+# ninguna búsqueda. Si algo tiene que caer para hacer sitio, que caiga antes
+# 'cross_memory', que en gran parte ya es redundante con lo que aporta la
+# síntesis.
 _ORDEN_DE_RECORTE = ['cross_memory', 'knowledge', 'astrology']
 
 # Historial de la conversación activa: cuántos mensajes recientes se cargan.
@@ -112,8 +120,12 @@ def _get_cross_memory(user_id: str, current_conv_id: str = None,
                       max_convs: int = 3, msgs_per: int = 4) -> str:
     """
     Inyecta los últimos mensajes de conversaciones anteriores como contexto.
-    TEMPORAL: en FASE 1 se sustituye por la síntesis viva del usuario, que
-    ocupa menos y aporta más (esto trae mensajes sin filtro de relevancia).
+    TEMPORAL: parcialmente redundante desde la FASE 1 (ver synthesis.py), que
+    aporta una comprensión más densa y filtrada de quién es el usuario. Se
+    mantiene por ahora como complemento (detalle literal reciente que la
+    síntesis, al ser un resumen, no conserva) — candidato a revisar en la
+    Fase 2, cuando la memoria episódica por búsqueda cubra este mismo hueco
+    mejor.
     """
     null_id = '00000000-0000-0000-0000-000000000000'
     convs   = db_all(
@@ -158,13 +170,6 @@ _SOURCE_QUESTION_TRIGGERS = [
     "qué documento usaste", "que documento usaste",
 ]
 
-
-def _is_source_question(message: str) -> bool:
-    """Detecta si el mensaje contiene una pregunta sobre fuentes, en cualquier punto."""
-    msg_lower = message.lower()
-    return any(t in msg_lower for t in _SOURCE_QUESTION_TRIGGERS)
-
-
 # Verbos/frases que indican que el usuario pide CONTENIDO nuevo, no solo la
 # fuente de algo ya dicho. Si aparecen junto a un trigger de fuentes, el
 # mensaje es "combinado" — sin esto, la longitud por sí sola clasificaba mal:
@@ -176,6 +181,12 @@ _CONTENT_REQUEST_CUES = [
     "informacion sobre", "sabes de", "sabes sobre", "dime sobre", "qué es",
     "que es", "qué sabes de", "que sabes de", "enséñame", "ensename",
 ]
+
+
+def _is_source_question(message: str) -> bool:
+    """Detecta si el mensaje contiene una pregunta sobre fuentes, en cualquier punto."""
+    msg_lower = message.lower()
+    return any(t in msg_lower for t in _SOURCE_QUESTION_TRIGGERS)
 
 
 def _is_pure_source_question(message: str) -> bool:
@@ -192,6 +203,8 @@ def _is_pure_source_question(message: str) -> bool:
     if any(cue in msg_lower for cue in _CONTENT_REQUEST_CUES):
         return False
     return len(message.strip()) <= 90
+
+
 def _get_last_assistant_sources(conv_id: str) -> list:
     """
     Recupera las fuentes reales guardadas del último mensaje de GaIA en esta
@@ -401,7 +414,8 @@ def chat():
     # ── Presupuesto de contexto (FASE 0) ────────────────────────────────────
     # Se mide todo lo acumulado y, si no cabe en el hueco que deja el ADN, se
     # descartan bloques enteros por orden de prioridad inversa. Así evitamos
-    # los 413 de Groq sin recortar el historial de la conversación activa.
+    # los 413 de Groq sin recortar el historial de la conversación activa ni
+    # la síntesis viva (ver _ORDEN_DE_RECORTE).
     bloques = _ajustar_a_presupuesto({
         'cross_memory': cross_memory,
         'knowledge':    knowledge_context,
@@ -412,11 +426,18 @@ def chat():
     astrology_context = bloques['astrology']
 
     # ── Perfil de usuario — onboarding único + detección de datos nuevos ────
+    # ── Síntesis viva (FASE 1) — comprensión de fondo del usuario, siempre ──
+    # presente, generada de forma asíncrona (ver synthesis.py y
+    # routes/maintenance.py). Se inyecta SIEMPRE que exista, sin pasar por el
+    # sistema de recorte por presupuesto (es corta y de alto valor — ver nota
+    # en _ORDEN_DE_RECORTE más arriba).
     profile_context     = ''
+    synthesis_context   = ''
     onboarding_suffix    = ''
     new_data_suffix      = ''
     if user_id and not temporary:
         profile_context = format_profile_context(user_id)
+        synthesis_context = format_synthesis_context(user_id)
 
         if needs_onboarding(user_id):
             onboarding_suffix = format_onboarding_prompt_instruction()
@@ -438,7 +459,7 @@ def chat():
             "tu ADN directamente por chat.\n\n"
         )
 
-    extra_prefix = (developer_prefix + profile_context + onboarding_suffix +
+    extra_prefix = (developer_prefix + profile_context + synthesis_context + onboarding_suffix +
                     new_data_suffix + new_chart_suffix + sources_question_block)
 
     try:
@@ -456,7 +477,7 @@ def chat():
         logger.error(f'[CHAT] Groq error: {e}')
         return jsonify({'error': 'Error al conectar con GaIA'}), 500
 
-     # ── Perfil: aplicar marcas [GUARDAR_PERFIL: ...] si las hay, y limpiarlas ──
+    # ── Perfil: aplicar marcas [GUARDAR_PERFIL: ...] si las hay, y limpiarlas ──
     if user_id and not temporary:
         gaia_text = extract_and_apply_save_marks(user_id, gaia_text)
 

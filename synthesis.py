@@ -198,30 +198,47 @@ REGLAS:
 
 def _call_llm_for_synthesis(prompt: str) -> str | None:
     """
-    Llama al LLM para generar la síntesis. Usa el modelo grande porque es una
-    tarea analítica (detectar patrones) y corre en ASÍNCRONO — la latencia no
-    importa aquí, así que priorizamos calidad. reasoning_effort medio: queremos
-    que piense, pero con tope de tokens amplio para que le quepa razonamiento
-    + síntesis dentro de una sola llamada sin agotar el presupuesto.
+    Llama al LLM para generar la síntesis, recorriendo la cadena de modelos
+    (igual que la llamada principal del chat) hasta conseguir una respuesta.
+
+    NOTA (14-ago-2026): la primera versión de esta función solo intentaba
+    gpt-oss-120b sin cadena de fallback, y sin límite propio de timeout ni
+    de reintentos. Cuando ese modelo devolvió rate-limit, el cliente de Groq
+    entró en su espera interna de reintento (backoff exponencial), que se
+    alargó más que el timeout por defecto de gunicorn (30s) — gunicorn mató
+    el worker a media espera (SIGABRT/SIGKILL), y la petición HTTP devolvió
+    500 sin ningún log de error "limpio" de la propia función.
+
+    Ahora: (a) se recorren los 3 modelos de la cadena, igual que en llm.py,
+    para no depender de que el primero tenga cupo libre; (b) cada intento
+    usa max_retries=1 y timeout=25s propios, bien por debajo del timeout de
+    gunicorn, para que un fallo se resuelva rápido y pase al siguiente
+    modelo en vez de quedarse dormido esperando.
     """
     from llm import _client
     from config import GROQ_MODELS_GENERAL
     if not _client:
         return None
 
-    try:
-        response = _client.chat.completions.create(
-            model=GROQ_MODELS_GENERAL[0],   # gpt-oss-120b — el más capaz
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=1500,        # razonamiento + ~450 palabras de síntesis
-            temperature=0.4,
-            reasoning_effort="medium",
-        )
-        text = response.choices[0].message.content.strip()
-        return text or None
-    except Exception as e:
-        logger.warning(f"[synthesis] Error al generar síntesis: {e}")
-        return None
+    for model in GROQ_MODELS_GENERAL:
+        try:
+            response = _client.with_options(max_retries=1, timeout=25.0).chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=1500,        # razonamiento + ~450 palabras de síntesis
+                temperature=0.4,
+                reasoning_effort="medium",
+            )
+            text = response.choices[0].message.content.strip()
+            if text:
+                return text
+            logger.warning(f"[synthesis] {model} devolvió contenido vacío, probando siguiente")
+        except Exception as e:
+            logger.warning(f"[synthesis] {model} falló ({e}), probando siguiente modelo")
+            continue
+
+    logger.warning("[synthesis] Todos los modelos de la cadena fallaron para la síntesis")
+    return None
 
 
 def _store_synthesis(user_id: str, synthesis_text: str):

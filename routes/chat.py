@@ -17,62 +17,35 @@ from user_profile import (
     format_new_data_detected_instruction, extract_and_apply_save_marks,
 )
 from synthesis import format_synthesis_context
+from memory_search import search_user_memory, format_deep_memory
 
 logger  = logging.getLogger(__name__)
 chat_bp = Blueprint('chat', __name__)
 
 # ── Presupuesto de contexto (FASE 0) ──────────────────────────────────────────
 #
-# Los modelos actuales de Groq (gpt-oss-120b / qwen3.6-27b / gpt-oss-20b) tienen
-# un límite de 8.000 tokens por minuto. El ADN de GaIA ya ocupa ~4.500 tokens,
-# así que todo lo demás (perfil + síntesis + memoria + knowledge + astrología +
-# historial + la propia respuesta) tiene que caber en el hueco que queda.
+# Los modelos actuales de Groq tienen un límite de 8K TPM. El ADN ocupa ~4.500
+# tokens, así que todo lo demás comparte el hueco que queda. Se mide antes de
+# cada llamada y se recorta por orden de prioridad si no cabe.
 #
-# Antes de esta fase no había ningún control: si coincidían knowledge grande +
-# astrología + historial largo, el prompt se pasaba del límite y Groq devolvía
-# 413. Ahora se mide todo antes de enviar y, si no cabe, se recorta por orden
-# de prioridad INVERSA (lo menos esencial cae primero).
-#
-# Nota sobre la estimación: no llamamos a un tokenizador real (añadiría una
-# dependencia pesada en Render, que va justo de RAM). Se usa la regla práctica
-# de ~3,6 caracteres por token en español, con un margen de seguridad. Es una
-# aproximación, no un cálculo exacto — por eso el tope es conservador.
+# La síntesis viva (FASE 1) y la memoria profunda (FASE 2) NO entran en el
+# orden de recorte a propósito: son las piezas de mayor impacto y más cortas.
+# La memoria profunda se concatena dentro de cross_memory, así que ya queda
+# medida automáticamente cuando se mide ese bloque.
 
-_CHARS_POR_TOKEN   = 3.6
-_MAX_CONTEXT_TOKENS = 2600   # presupuesto para TODO lo que no es el ADN ni la respuesta
-
-# Orden de recorte: el primero de la lista es el primero en caer si no cabe.
-# El historial reciente nunca se recorta aquí (se controla aparte, por número
-# de mensajes) — es lo último que se debe sacrificar, porque sin él GaIA pierde
-# el hilo de lo que se está hablando ahora mismo.
-#
-# La síntesis viva (FASE 1) NO entra en esta lista a propósito: es corta
-# (~450 palabras ≈ 600 tokens) y es la pieza de mayor impacto de todo el
-# contexto — es lo que hace que GaIA "conozca" al usuario sin depender de
-# ninguna búsqueda. Si algo tiene que caer para hacer sitio, que caiga antes
-# 'cross_memory', que en gran parte ya es redundante con lo que aporta la
-# síntesis.
-_ORDEN_DE_RECORTE = ['cross_memory', 'knowledge', 'astrology']
-
-# Historial de la conversación activa: cuántos mensajes recientes se cargan.
+_CHARS_POR_TOKEN    = 3.6
+_MAX_CONTEXT_TOKENS = 2600
+_ORDEN_DE_RECORTE   = ['cross_memory', 'knowledge', 'astrology']
 _MSGS_CONVERSACION_ACTIVA = 30
 
 
 def _estimar_tokens(texto: str) -> int:
-    """Estimación aproximada de tokens a partir de caracteres (ver nota arriba)."""
     if not texto:
         return 0
     return int(len(texto) / _CHARS_POR_TOKEN)
 
 
 def _ajustar_a_presupuesto(bloques: dict) -> dict:
-    """
-    Recibe los bloques de contexto (cross_memory, knowledge, astrology) y
-    devuelve el mismo dict, recortando bloques enteros si la suma se pasa del
-    presupuesto. Se eliminan bloques completos en vez de truncarlos a medias:
-    medio bloque de conocimiento es peor que ninguno — puede cortar una frase
-    por la mitad y confundir al modelo más que ayudarle.
-    """
     total = sum(_estimar_tokens(v) for v in bloques.values())
     if total <= _MAX_CONTEXT_TOKENS:
         return bloques
@@ -99,14 +72,8 @@ def _ajustar_a_presupuesto(bloques: dict) -> dict:
 def _get_conv_messages(conv_id: str, limit: int = _MSGS_CONVERSACION_ACTIVA) -> list:
     """
     Carga los mensajes MÁS RECIENTES de la conversación activa.
-
-    FASE 0 — corrección de bug: antes esta consulta hacía
-    `ORDER BY created_at ASC LIMIT 50`, lo que en conversaciones de más de 50
-    mensajes cargaba los 50 más ANTIGUOS y descartaba justo los últimos — es
-    decir, GaIA perdía el hilo de lo que se acababa de hablar precisamente en
-    las conversaciones largas, que es donde más importa. Ahora se piden los
-    últimos N (DESC) y se invierten en Python para devolverlos en orden
-    cronológico, que es como los espera el modelo.
+    FASE 0 fix: ORDER BY DESC + reversed para no perder los mensajes
+    más recientes en conversaciones largas.
     """
     rows = db_all(
         "SELECT role, content FROM messages "
@@ -119,13 +86,9 @@ def _get_conv_messages(conv_id: str, limit: int = _MSGS_CONVERSACION_ACTIVA) -> 
 def _get_cross_memory(user_id: str, current_conv_id: str = None,
                       max_convs: int = 3, msgs_per: int = 4) -> str:
     """
-    Inyecta los últimos mensajes de conversaciones anteriores como contexto.
-    TEMPORAL: parcialmente redundante desde la FASE 1 (ver synthesis.py), que
-    aporta una comprensión más densa y filtrada de quién es el usuario. Se
-    mantiene por ahora como complemento (detalle literal reciente que la
-    síntesis, al ser un resumen, no conserva) — candidato a revisar en la
-    Fase 2, cuando la memoria episódica por búsqueda cubra este mismo hueco
-    mejor.
+    Inyecta fragmentos de conversaciones anteriores como contexto literal.
+    Complementa a la memoria profunda (FASE 2): esta trae mensajes recientes
+    sin filtrar; la profunda trae los más relevantes por significado.
     """
     null_id = '00000000-0000-0000-0000-000000000000'
     convs   = db_all(
@@ -155,8 +118,8 @@ def _get_cross_memory(user_id: str, current_conv_id: str = None,
         return ''
     return '\n\n## MEMORIA DE CONVERSACIONES ANTERIORES\n' + '\n\n'.join(parts) + '\n---\n'
 
-# ── Fuentes reales por mensaje — para que GaIA pueda ser honesta cuando le ──
-# preguntan "¿en qué te basas?" en vez de improvisar una cita plausible ──────
+
+# ── Fuentes reales por mensaje ────────────────────────────────────────────────
 
 _SOURCE_QUESTION_TRIGGERS = [
     "en qué documento", "en que documento", "en qué documentos", "en que documentos",
@@ -170,11 +133,6 @@ _SOURCE_QUESTION_TRIGGERS = [
     "qué documento usaste", "que documento usaste",
 ]
 
-# Verbos/frases que indican que el usuario pide CONTENIDO nuevo, no solo la
-# fuente de algo ya dicho. Si aparecen junto a un trigger de fuentes, el
-# mensaje es "combinado" — sin esto, la longitud por sí sola clasificaba mal:
-# "háblame de X y dime en qué te basas" mide menos de 90 caracteres pero
-# claramente pide contenido nuevo, no solo la fuente del turno anterior.
 _CONTENT_REQUEST_CUES = [
     "háblame de", "hablame de", "cuéntame de", "cuentame de", "cuéntame sobre",
     "cuentame sobre", "explícame", "explicame", "información sobre",
@@ -184,19 +142,11 @@ _CONTENT_REQUEST_CUES = [
 
 
 def _is_source_question(message: str) -> bool:
-    """Detecta si el mensaje contiene una pregunta sobre fuentes, en cualquier punto."""
     msg_lower = message.lower()
     return any(t in msg_lower for t in _SOURCE_QUESTION_TRIGGERS)
 
 
 def _is_pure_source_question(message: str) -> bool:
-    """
-    True solo si el mensaje es (casi) exclusivamente una pregunta sobre
-    fuentes — no si, además, pide contenido nuevo sobre un tema (ej.
-    "háblame de X y dime en qué te basas"). En ese caso combinado NO
-    queremos saltarnos el RAG: el usuario también quiere contenido nuevo, y
-    las fuentes a citar son las de ESE contenido, no las del turno anterior.
-    """
     if not _is_source_question(message):
         return False
     msg_lower = message.lower()
@@ -206,11 +156,6 @@ def _is_pure_source_question(message: str) -> bool:
 
 
 def _get_last_assistant_sources(conv_id: str) -> list:
-    """
-    Recupera las fuentes reales guardadas del último mensaje de GaIA en esta
-    conversación (columna messages.sources). Lista vacía si no hay mensaje
-    previo o si no tiene fuentes guardadas (mensajes anteriores a esta función).
-    """
     row = db_one(
         "SELECT sources FROM messages WHERE conversation_id = %s AND role = 'assistant' "
         "ORDER BY created_at DESC LIMIT 1",
@@ -228,11 +173,6 @@ def _get_last_assistant_sources(conv_id: str) -> list:
 
 
 def _format_sources_question_block(sources: list) -> str:
-    """
-    Instrucción que reemplaza al RAG normal cuando el usuario pregunta por las
-    fuentes de la respuesta anterior. Le da a GaIA la lista REAL (verificada
-    por el sistema) en vez de dejar que adivine.
-    """
     if sources:
         lista = "\n".join(f"- {s}" for s in sources)
         return (
@@ -254,11 +194,6 @@ def _format_sources_question_block(sources: list) -> str:
 
 
 def _format_combined_sources_reminder() -> str:
-    """
-    Para el caso combinado (contenido nuevo + pregunta de fuentes en el mismo
-    mensaje): el RAG corre con normalidad y se añade un recordatorio reforzado
-    de citar solo lo que aparezca en el contexto de este mismo turno.
-    """
     return (
         "\n## RECORDATORIO — CITA SOLO FUENTES REALES DE ESTE TURNO\n"
         "El usuario también te pide que confirmes en qué documentos te basas. "
@@ -271,7 +206,6 @@ def _format_combined_sources_reminder() -> str:
 
 
 def _extract_sources_used(chunks: list, web_context: str) -> list:
-    """Nombres de documento únicos realmente usados en este turno, para guardar."""
     sources = sorted({
         c.get('source', '').split('/')[-1].replace('.txt', '')
         for c in chunks if c.get('source')
@@ -279,6 +213,7 @@ def _extract_sources_used(chunks: list, web_context: str) -> list:
     if web_context:
         sources.append('Búsqueda web')
     return sources
+
 
 # ── Ruta principal ─────────────────────────────────────────────────────────────
 
@@ -297,7 +232,7 @@ def chat():
 
     logger.info(f'[CHAT] user={user_id} conv={conv_id} voice={voice_mode} len={len(message)}')
 
-    # ── Modo desarrollador — comandos especiales de configuración ───────────
+    # ── Modo desarrollador ───────────────────────────────────────────────────
     user_is_developer = bool(user_id) and is_developer(user_id)
 
     if user_is_developer:
@@ -349,6 +284,13 @@ def chat():
 
         history      = _get_conv_messages(conv_id) if conv_id else []
         cross_memory = _get_cross_memory(user_id, conv_id)
+
+        # FASE 2 — memoria episódica híbrida (FTS + vectorial) ───────────────
+        # Se concatena a cross_memory para que el presupuesto adaptativo la
+        # mida y recorte junto con el resto de memoria cruzada si no cabe.
+        deep_memory  = format_deep_memory(search_user_memory(user_id, message, conv_id))
+        cross_memory = cross_memory + deep_memory
+
         history.append({'role': 'user', 'content': message})
 
         if conv_id:
@@ -359,10 +301,7 @@ def chat():
             )
             db_run("UPDATE conversations SET updated_at = NOW() WHERE id = %s", (conv_id,))
 
-    # ── ¿Pregunta por las fuentes de la respuesta anterior? ──────────────────
-    # Solo si es una pregunta PURA de fuentes saltamos el RAG y usamos las
-    # fuentes guardadas del turno anterior. Si viene combinada con una petición
-    # de contenido nuevo, el RAG corre igual y solo añadimos un recordatorio.
+    # ── Fuentes de la respuesta anterior ─────────────────────────────────────
     is_pure_source_question     = _is_pure_source_question(message)
     is_combined_source_question = _is_source_question(message) and not is_pure_source_question
 
@@ -372,16 +311,15 @@ def chat():
         previous_sources = _get_last_assistant_sources(conv_id)
         sources_question_block = _format_sources_question_block(previous_sources)
     else:
-        # ── Knowledge RAG v6.1 — Mónica siempre + routing por documento + web
         chunks, web_context = search_knowledge(message)
         knowledge_context   = format_knowledge_context(chunks, web_context)
         sources_question_block = (
             _format_combined_sources_reminder() if is_combined_source_question else ''
         )
 
-    # ── Astrología — carta natal + tránsitos del usuario, si los tiene ──────
+    # ── Astrología ────────────────────────────────────────────────────────────
     astrology_context = ''
-    new_chart_suffix = ''
+    new_chart_suffix  = ''
     if user_id:
         new_chart_request = extract_new_chart_request(message)
         if new_chart_request:
@@ -407,15 +345,11 @@ def chat():
                 )
 
         if new_chart_request or is_astrology_related(message):
-            target_date = extract_date_from_message(message)
+            target_date  = extract_date_from_message(message)
             person_label = extract_person_from_message(user_id, message)
             astrology_context = format_astrology_context(user_id, target_date, person_label)
 
-    # ── Presupuesto de contexto (FASE 0) ────────────────────────────────────
-    # Se mide todo lo acumulado y, si no cabe en el hueco que deja el ADN, se
-    # descartan bloques enteros por orden de prioridad inversa. Así evitamos
-    # los 413 de Groq sin recortar el historial de la conversación activa ni
-    # la síntesis viva (ver _ORDEN_DE_RECORTE).
+    # ── Presupuesto adaptativo (FASE 0) ──────────────────────────────────────
     bloques = _ajustar_a_presupuesto({
         'cross_memory': cross_memory,
         'knowledge':    knowledge_context,
@@ -425,18 +359,13 @@ def chat():
     knowledge_context = bloques['knowledge']
     astrology_context = bloques['astrology']
 
-    # ── Perfil de usuario — onboarding único + detección de datos nuevos ────
-    # ── Síntesis viva (FASE 1) — comprensión de fondo del usuario, siempre ──
-    # presente, generada de forma asíncrona (ver synthesis.py y
-    # routes/maintenance.py). Se inyecta SIEMPRE que exista, sin pasar por el
-    # sistema de recorte por presupuesto (es corta y de alto valor — ver nota
-    # en _ORDEN_DE_RECORTE más arriba).
-    profile_context     = ''
-    synthesis_context   = ''
-    onboarding_suffix    = ''
-    new_data_suffix      = ''
+    # ── Perfil + síntesis viva (FASE 1) ──────────────────────────────────────
+    profile_context   = ''
+    synthesis_context = ''
+    onboarding_suffix = ''
+    new_data_suffix   = ''
     if user_id and not temporary:
-        profile_context = format_profile_context(user_id)
+        profile_context   = format_profile_context(user_id)
         synthesis_context = format_synthesis_context(user_id)
 
         if needs_onboarding(user_id):
@@ -477,11 +406,11 @@ def chat():
         logger.error(f'[CHAT] Groq error: {e}')
         return jsonify({'error': 'Error al conectar con GaIA'}), 500
 
-    # ── Perfil: aplicar marcas [GUARDAR_PERFIL: ...] si las hay, y limpiarlas ──
+    # ── Perfil: aplicar marcas [GUARDAR_PERFIL: ...] ─────────────────────────
     if user_id and not temporary:
         gaia_text = extract_and_apply_save_marks(user_id, gaia_text)
 
-    # ── Guardar respuesta (con las fuentes reales usadas en este turno) ─────
+    # ── Guardar respuesta con fuentes reales ─────────────────────────────────
     if not temporary and conv_id:
         sources_used = _extract_sources_used(chunks, web_context)
         db_run(

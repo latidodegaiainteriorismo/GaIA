@@ -3,25 +3,38 @@ import re
 import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from groq import Groq, APIStatusError
-from config import GROQ_API_KEY, GROQ_MODELS_GENERAL, GROQ_MODELS_ASTROLOGY
+from openai import OpenAI, APIStatusError
+from groq import Groq
+from config import (
+    GEMINI_API_KEY, GEMINI_BASE_URL, GEMINI_MODEL_GENERAL, GEMINI_MODEL_ASTROLOGY,
+    GROQ_API_KEY, GROQ_MODELS_GENERAL, GROQ_MODELS_ASTROLOGY,
+)
 
 logger = logging.getLogger(__name__)
 
-# Cliente Groq (singleton)
-_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+# ── Clientes ───────────────────────────────────────────────────────────────────
+#
+# MIGRACIÓN (19-ago-2026): Gemini es ahora el proveedor principal, llamado a
+# través de su endpoint compatible con la API de OpenAI — por eso el cliente
+# es `OpenAI(...)`, no un SDK de Google. Groq se mantiene como fallback de
+# emergencia (ver _call_with_fallback_chain): si Gemini devuelve error, se
+# reintenta con la cadena de Groq antes de fallar del todo. Esto es
+# deliberadamente distinto del patrón anterior (varios modelos Groq en
+# cadena) — ahora es "proveedor principal robusto" + "red de seguridad",
+# no varios modelos compitiendo por la misma cuota estrecha.
+_client = OpenAI(api_key=GEMINI_API_KEY, base_url=GEMINI_BASE_URL) if GEMINI_API_KEY else None
+_groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 # Retrocompatibilidad con código que importe estos nombres directamente
-GROQ_MODEL          = GROQ_MODELS_GENERAL[0]
-GROQ_MODEL_FALLBACK = GROQ_MODELS_GENERAL[1]
+GROQ_MODEL          = GEMINI_MODEL_GENERAL
+GROQ_MODEL_FALLBACK = GEMINI_MODEL_GENERAL
 
 # Ruta al ADN — relativa al directorio de ejecución (raíz del proyecto)
 _DNA_PATH           = os.path.join(os.path.dirname(__file__), 'prompts', 'gaia_dna.txt')
 _DNA_ASTROLOGY_PATH = os.path.join(os.path.dirname(__file__), 'prompts', 'gaia_dna_astrologia.txt')
 
-# Códigos de error de Groq que significan "esta petición no cabe en la cuota
-# de este modelo ahora mismo" — en ambos casos tiene sentido saltar al
-# siguiente modelo de la cadena en vez de fallar directamente.
+# Códigos de error que significan "esta petición no cabe en la cuota de este
+# proveedor ahora mismo" — tiene sentido pasar al fallback en vez de fallar.
 _RETRYABLE_STATUS_CODES = (429, 413)
 
 # Zona horaria de referencia para GaIA — Adrián y Mónica operan desde
@@ -35,9 +48,12 @@ _MESES_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "ag
 
 
 class GroqRateLimitError(Exception):
-    """Se lanza cuando TODOS los modelos de la cadena están agotados/rate-limited.
-    Lleva el tiempo de espera estimado (en segundos) si se pudo extraer del
-    mensaje de error de Groq, para poder mostrárselo al usuario."""
+    """Se lanza cuando Gemini Y el fallback de Groq están agotados/rate-limited.
+    Se mantiene el nombre por retrocompatibilidad con routes/chat.py, que ya
+    captura esta excepción explícitamente — cambiar el nombre obligaría a
+    tocar ese fichero también sin ganar nada. Lleva el tiempo de espera
+    estimado (en segundos) si se pudo extraer del mensaje de error, para
+    poder mostrárselo al usuario."""
     def __init__(self, message: str, retry_after_seconds=None):
         super().__init__(message)
         self.retry_after_seconds = retry_after_seconds
@@ -128,7 +144,7 @@ def _build_knowledge_block(knowledge_context: str) -> str:
 
 
 def _parse_retry_seconds(error_message: str):
-    """Extrae el tiempo de espera del mensaje de error de Groq, ej. '33m10.656s'."""
+    """Extrae el tiempo de espera de un mensaje de error, ej. '33m10.656s'."""
     m = re.search(r'try again in\s+(?:(\d+)m)?(\d+(?:\.\d+)?)s', error_message, re.IGNORECASE)
     if not m:
         return None
@@ -137,7 +153,7 @@ def _parse_retry_seconds(error_message: str):
     return int(minutes * 60 + seconds)
 
 
-def _call_model(model: str, messages: list, max_tokens: int = 1024, temperature: float = 0.8) -> str:
+def _call_gemini(model: str, messages: list, max_tokens: int = 1024, temperature: float = 0.8) -> str:
     completion = _client.chat.completions.create(
         model=model,
         messages=messages,
@@ -147,34 +163,55 @@ def _call_model(model: str, messages: list, max_tokens: int = 1024, temperature:
     return completion.choices[0].message.content
 
 
-def _call_with_fallback_chain(models: list, messages: list, max_tokens: int = 1024,
-                               temperature: float = 0.8) -> str:
+def _call_groq_fallback(models: list, messages: list, max_tokens: int, temperature: float):
     """
-    Prueba cada modelo de la lista en orden. Salta al siguiente si el actual
-    devuelve 429 (rate-limited) o 413 (payload/tokens por minuto excedidos).
-    Cualquier otro tipo de error se propaga inmediatamente, sin reintentos.
+    Red de seguridad si Gemini falla del todo. Recorre la cadena de modelos
+    Groq como se hacía antes de la migración. Si esto también falla, se
+    propaga GroqRateLimitError igual que antes.
+    """
+    if not _groq_client:
+        return None
+    for model in models:
+        try:
+            completion = _groq_client.chat.completions.create(
+                model=model, messages=messages, max_tokens=max_tokens, temperature=temperature,
+            )
+            logger.warning(f'[LLM] ⚠️ Gemini falló — respuesta servida vía fallback Groq ({model})')
+            return completion.choices[0].message.content
+        except Exception as e:
+            logger.warning(f'[LLM] Fallback Groq {model} también falló: {e}')
+            continue
+    return None
+
+
+def _call_with_fallback(gemini_model: str, groq_models: list, messages: list,
+                         max_tokens: int = 1024, temperature: float = 0.8) -> str:
+    """
+    Llama primero a Gemini. Si devuelve error retryable (429/413) o cualquier
+    excepción, recurre a la cadena de Groq como red de seguridad. Solo si
+    ambos proveedores fallan se propaga GroqRateLimitError.
     """
     if not _client:
-        raise RuntimeError('Groq client no inicializado — revisa GROQ_API_KEY')
+        raise RuntimeError('Cliente Gemini no inicializado — revisa GEMINI_API_KEY')
 
     last_error = None
-    for i, model in enumerate(models):
-        try:
-            response = _call_model(model, messages, max_tokens, temperature)
-            if i > 0:
-                logger.info(f'[LLM] ✅ Respuesta vía fallback #{i}: {model}')
-            return response
-        except APIStatusError as e:
-            if e.status_code not in _RETRYABLE_STATUS_CODES:
-                raise
-            logger.warning(f'[LLM] {model} devolvió {e.status_code}, probando siguiente modelo de la cadena')
-            last_error = e
-            continue
+    try:
+        return _call_gemini(gemini_model, messages, max_tokens, temperature)
+    except APIStatusError as e:
+        last_error = e
+        logger.warning(f'[LLM] Gemini devolvió {e.status_code} — probando fallback Groq')
+    except Exception as e:
+        last_error = e
+        logger.warning(f'[LLM] Gemini falló ({type(e).__name__}) — probando fallback Groq')
+
+    fallback_response = _call_groq_fallback(groq_models, messages, max_tokens, temperature)
+    if fallback_response is not None:
+        return fallback_response
 
     retry_after = _parse_retry_seconds(str(last_error)) if last_error else None
-    logger.error(f'[LLM] Todos los modelos de la cadena agotados: {models}. Retry en {retry_after}s')
+    logger.error(f'[LLM] Gemini y fallback Groq agotados. Retry en {retry_after}s')
     raise GroqRateLimitError(
-        f'Todos los modelos disponibles están saturados ({", ".join(models)})',
+        'Gemini y el proveedor de respaldo están saturados o no disponibles',
         retry_after_seconds=retry_after
     )
 
@@ -182,8 +219,10 @@ def _call_with_fallback_chain(models: list, messages: list, max_tokens: int = 10
 def call_groq(history: list, cross_memory: str = '', knowledge_context: str = '',
               astrology_context: str = '', extra_system_prefix: str = '') -> str:
     """
-    Llama a Groq (chat general) con el historial de la conversación, probando
-    la cadena de modelos GROQ_MODELS_GENERAL en orden ante saturación de cuota.
+    Llama al LLM principal (Gemini, con fallback a Groq) con el historial de
+    la conversación. El nombre de la función se mantiene por retrocompatibilidad
+    con routes/chat.py — cambiar el nombre no aporta nada y obligaría a tocar
+    más ficheros.
 
     Args:
         history:              Lista de dicts {'role': 'user'|'assistant', 'content': str}
@@ -195,7 +234,7 @@ def call_groq(history: list, cross_memory: str = '', knowledge_context: str = ''
     Returns:
         Respuesta de GaIA como string.
     Raises:
-        GroqRateLimitError: si todos los modelos de la cadena están saturados.
+        GroqRateLimitError: si Gemini y el fallback de Groq fallan ambos.
     """
     dna    = load_dna()
     system = (_current_datetime_block() + extra_system_prefix + dna + cross_memory +
@@ -208,21 +247,20 @@ def call_groq(history: list, cross_memory: str = '', knowledge_context: str = ''
         role = m['role'] if m['role'] in ('user', 'assistant') else 'user'
         messages.append({'role': role, 'content': m['content']})
 
-    logger.info(f'[LLM] Llamando Groq (general) | msgs={len(messages)} | '
-               f'model={GROQ_MODELS_GENERAL[0]} | rag={bool(knowledge_context)}')
+    logger.info(f'[LLM] Llamando Gemini (general) | msgs={len(messages)} | '
+               f'model={GEMINI_MODEL_GENERAL} | rag={bool(knowledge_context)}')
 
-    response = _call_with_fallback_chain(GROQ_MODELS_GENERAL, messages)
+    response = _call_with_fallback(GEMINI_MODEL_GENERAL, GROQ_MODELS_GENERAL, messages)
     logger.info(f'[LLM] ✅ Respuesta: {len(response)} chars')
     return response
 
 
 def call_groq_astrology(user_message: str, astrology_context: str) -> str:
     """
-    Llama a Groq usando la cadena de modelos dedicada a astrología
-    (GROQ_MODELS_ASTROLOGY) y el ADN especializado en interpretación de
-    cartas/tránsitos. Pensado para consultas puramente astrológicas donde se
-    prioriza rigor y precisión en la exposición de datos sobre fluidez
-    conversacional — de ahí el modelo más pequeño y económico por defecto.
+    Llama al LLM (Gemini, con fallback a Groq) usando el ADN especializado en
+    interpretación de cartas/tránsitos. Pensado para consultas puramente
+    astrológicas donde se prioriza rigor y precisión en la exposición de
+    datos sobre fluidez conversacional.
 
     Args:
         user_message:      Mensaje del usuario (la pregunta astrológica)
@@ -230,7 +268,7 @@ def call_groq_astrology(user_message: str, astrology_context: str) -> str:
     Returns:
         Respuesta de GaIA como string.
     Raises:
-        GroqRateLimitError: si todos los modelos de la cadena están saturados.
+        GroqRateLimitError: si Gemini y el fallback de Groq fallan ambos.
     """
     dna_base      = load_dna()
     dna_astrology = load_dna_astrologia()
@@ -245,8 +283,8 @@ def call_groq_astrology(user_message: str, astrology_context: str) -> str:
         {'role': 'user', 'content': user_message},
     ]
 
-    logger.info(f'[LLM] Llamando Groq (astrología) | model={GROQ_MODELS_ASTROLOGY[0]}')
+    logger.info(f'[LLM] Llamando Gemini (astrología) | model={GEMINI_MODEL_ASTROLOGY}')
 
-    response = _call_with_fallback_chain(GROQ_MODELS_ASTROLOGY, messages)
+    response = _call_with_fallback(GEMINI_MODEL_ASTROLOGY, GROQ_MODELS_ASTROLOGY, messages)
     logger.info(f'[LLM] ✅ Respuesta astrología: {len(response)} chars')
     return response

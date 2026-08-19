@@ -28,14 +28,27 @@ chat_bp = Blueprint('chat', __name__)
 # tokens, así que todo lo demás comparte el hueco que queda. Se mide antes de
 # cada llamada y se recorta por orden de prioridad si no cabe.
 #
-# La síntesis viva (FASE 1) y la memoria profunda (FASE 2) NO entran en el
-# orden de recorte a propósito: son las piezas de mayor impacto y más cortas.
-# La memoria profunda se concatena dentro de cross_memory, así que ya queda
-# medida automáticamente cuando se mide ese bloque.
+# CORRECCIÓN (19-ago-2026): la intención original era que la memoria profunda
+# (FASE 2) nunca se descartara por ser la pieza de mayor impacto — pero como
+# se concatena DENTRO de cross_memory (ver más abajo, `cross_memory =
+# cross_memory + deep_memory`), y cross_memory estaba PRIMERO en el orden de
+# recorte, en la práctica la memoria profunda era justo lo primero que se
+# tiraba en cualquier pregunta con contexto grande. Esto causó un bug real:
+# una pregunta de resumen conceptual trajo memoria episódica de un tema
+# personal no relacionado (activada por la expansión de temas de
+# memory_search.py) y, al no caber el resto del contexto, knowledge_context
+# sobrevivió mientras cross_memory (con sus instrucciones de "no fuerces la
+# conexión si no encaja") se perdió — la respuesta acabó mezclando contenido
+# sin la salvaguarda que debía filtrarlo.
+#
+# Orden nuevo: cross_memory (incluida la memoria profunda) se recorta EN
+# ÚLTIMO lugar, tal como decía la intención original. knowledge y astrology
+# se descartan antes porque son más reemplazables por el conocimiento
+# general del modelo; la memoria de usuario no tiene sustituto.
 
 _CHARS_POR_TOKEN    = 3.6
 _MAX_CONTEXT_TOKENS = 2600
-_ORDEN_DE_RECORTE   = ['cross_memory', 'knowledge', 'astrology']
+_ORDEN_DE_RECORTE   = ['astrology', 'knowledge', 'cross_memory']
 _MSGS_CONVERSACION_ACTIVA = 30
 
 
@@ -55,11 +68,28 @@ def _ajustar_a_presupuesto(bloques: dict) -> dict:
     for clave in _ORDEN_DE_RECORTE:
         if total <= _MAX_CONTEXT_TOKENS:
             break
-        if bloques.get(clave):
-            liberados = _estimar_tokens(bloques[clave])
-            bloques[clave] = ''
+        if not bloques.get(clave):
+            continue
+
+        tokens_bloque = _estimar_tokens(bloques[clave])
+
+        # cross_memory nunca se vacía del todo si por sí solo cabe en el
+        # presupuesto entero: se trunca por caracteres en vez de
+        # descartarse, conservando el principio del bloque. format_deep_memory
+        # pone la memoria profunda (FASE 2, más relevante semánticamente)
+        # ANTES que el histórico de conversaciones cruzadas — truncar por el
+        # final prioriza correctamente lo más valioso.
+        if clave == 'cross_memory' and tokens_bloque > _MAX_CONTEXT_TOKENS:
+            max_chars = int(_MAX_CONTEXT_TOKENS * _CHARS_POR_TOKEN)
+            bloques[clave] = bloques[clave][:max_chars] + '\n[...memoria truncada por espacio...]\n'
+            liberados = tokens_bloque - _MAX_CONTEXT_TOKENS
             total -= liberados
-            logger.info(f'[contexto] Descartado "{clave}" (-{liberados} tokens) → {total}')
+            logger.info(f'[contexto] Truncado "{clave}" a ~{_MAX_CONTEXT_TOKENS} tokens '
+                        f'(-{liberados} tokens) → {total}')
+        else:
+            bloques[clave] = ''
+            total -= tokens_bloque
+            logger.info(f'[contexto] Descartado "{clave}" (-{tokens_bloque} tokens) → {total}')
 
     if total > _MAX_CONTEXT_TOKENS:
         logger.warning(f'[contexto] Sigue por encima del presupuesto ({total}) tras recortar todo')
@@ -84,11 +114,20 @@ def _get_conv_messages(conv_id: str, limit: int = _MSGS_CONVERSACION_ACTIVA) -> 
 
 
 def _get_cross_memory(user_id: str, current_conv_id: str = None,
-                      max_convs: int = 3, msgs_per: int = 4) -> str:
+                      max_convs: int = 2, msgs_per: int = 3) -> str:
     """
     Inyecta fragmentos de conversaciones anteriores como contexto literal.
     Complementa a la memoria profunda (FASE 2): esta trae mensajes recientes
     sin filtrar; la profunda trae los más relevantes por significado.
+
+    AJUSTE (19-ago-2026): bajado de max_convs=3/msgs_per=4 a 2/3. Este bloque
+    va SIN filtrar por relevancia (a diferencia de deep_memory, que sí filtra
+    por significado) — es "lo último que se habló", no "lo más relevante para
+    esta pregunta". Con los valores anteriores, sumado a deep_memory, el
+    bloque combinado (cross_memory) podía superar por sí solo el presupuesto
+    total del contexto (_MAX_CONTEXT_TOKENS), forzando un truncado que corta
+    a ciegas. Menos volumen sin filtrar deja más margen relativo a la parte
+    que sí está filtrada por relevancia.
     """
     null_id = '00000000-0000-0000-0000-000000000000'
     convs   = db_all(

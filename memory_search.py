@@ -48,10 +48,35 @@ _MIN_TERM_LEN = 3
 TOP_K_DEEP_MEMORY = 3        # fragmentos finales (tras fusionar) a inyectar
 FTS_CANDIDATES = 8           # candidatos que trae cada via antes de fusionar
 VEC_CANDIDATES = 8
-MIN_FTS_RANK = 0.01          # descarta coincidencias de texto demasiado debiles
-MIN_VEC_SIMILARITY = 0.55    # descarta coincidencias vectoriales demasiado debiles
+
+# AJUSTE (19-ago-2026): ambos umbrales subidos tras un bug real — una
+# pregunta conceptual ("nuestro propósito", "la Era en la que vivimos")
+# trajo memoria de una conversación personal no relacionada (síntomas
+# físicos), porque MIN_FTS_RANK=0.01 era demasiado laxo (ts_rank normal
+# para una coincidencia con sentido ronda 0.1-0.6+) y MIN_VEC_SIMILARITY=0.55
+# dejaba pasar contenido solo vagamente relacionado por tema. Subidos a
+# umbrales que exigen relevancia real, no solo tangencial.
+MIN_FTS_RANK = 0.05          # descarta coincidencias de texto demasiado debiles
+MIN_VEC_SIMILARITY = 0.68    # descarta coincidencias vectoriales demasiado debiles
 CONTEXT_WINDOW = 1           # mensajes de contexto antes/despues de cada hallazgo
 RRF_K = 60                   # constante estandar de Reciprocal Rank Fusion
+
+# Palabras vacías/genéricas en español: no aportan nada a una búsqueda de
+# relevancia y, al aparecer en casi cualquier mensaje personal, disparaban
+# matches FTS espurios (ej. "nosotros", "nuestro" en una pregunta filosófica
+# coincidiendo con "nosotros" en una conversación de síntomas físicos, sin
+# relación real de tema). No es una lista exhaustiva de stopwords NLP — solo
+# cubre las que más ruido generan en este contexto conversacional.
+_STOPWORDS_ES = {
+    'que', 'con', 'los', 'las', 'del', 'por', 'para', 'una', 'uno', 'como',
+    'más', 'mas', 'pero', 'este', 'esta', 'esto', 'ese', 'esa', 'eso',
+    'nos', 'nosotros', 'nosotras', 'nuestro', 'nuestra', 'nuestros', 'nuestras',
+    'vosotros', 'vosotras', 'ellos', 'ellas', 'usted', 'ustedes',
+    'todo', 'toda', 'todos', 'todas', 'cada', 'muy', 'sin', 'sobre',
+    'ser', 'somos', 'eres', 'soy', 'son', 'fue', 'era', 'eran',
+    'hay', 'han', 'has', 'hemos', 'está', 'esta', 'están', 'estás',
+    'haz', 'haznos', 'hazme', 'dime', 'cuéntame', 'cuentame',
+}
 
 
 def _extract_search_terms(text: str) -> list[str]:
@@ -59,7 +84,7 @@ def _extract_search_terms(text: str) -> list[str]:
     cleaned = []
     for word in text.split():
         w = word.strip('.,;:!?¿¡"\'()[]{}').lower()
-        if len(w) >= _MIN_TERM_LEN:
+        if len(w) >= _MIN_TERM_LEN and w not in _STOPWORDS_ES:
             cleaned.append(w)
     return cleaned
 

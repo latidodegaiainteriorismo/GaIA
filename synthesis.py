@@ -209,21 +209,29 @@ def _call_llm_for_synthesis(prompt: str) -> str | None:
     el worker a media espera (SIGABRT/SIGKILL), y la petición HTTP devolvió
     500 sin ningún log de error "limpio" de la propia función.
 
-    Ahora: (a) se recorren los 3 modelos de la cadena, igual que en llm.py,
-    para no depender de que el primero tenga cupo libre; (b) cada intento
-    usa max_retries=1 y timeout=25s propios, bien por debajo del timeout de
-    gunicorn, para que un fallo se resuelva rápido y pase al siguiente
-    modelo en vez de quedarse dormido esperando.
+    CORRECCIÓN (19-ago-2026, tras migración a Gemini): antes se recorrían
+    los 3 modelos de GROQ_MODELS_GENERAL para no depender de que el primero
+    tuviera cupo libre en Groq. Tras la migración, _client (importado de
+    llm.py) apunta a Gemini, pero esta función seguía pidiendo nombres de
+    modelo de Groq (ej. 'openai/gpt-oss-120b') contra ese cliente — cada
+    llamada fallaba con "modelo no encontrado", y como el error se
+    capturaba silenciosamente para "probar el siguiente", los tres intentos
+    fallaban sin ningún aviso claro; la síntesis dejaba de actualizarse.
+    Corregido a usar el modelo Gemini configurado. Ya no hace falta iterar
+    varios modelos del mismo proveedor — Gemini tiene mucho más margen de
+    TPM que Groq, así que un único intento con reintento vía with_options
+    basta; se conserva el bucle solo como red de seguridad por si Gemini
+    devuelve contenido vacío en un intento puntual.
     """
     from llm import _client
-    from config import GROQ_MODELS_GENERAL
+    from config import GEMINI_MODEL_GENERAL
     if not _client:
         return None
 
-    for model in GROQ_MODELS_GENERAL:
+    for intento in range(2):
         try:
             response = _client.with_options(max_retries=1, timeout=25.0).chat.completions.create(
-                model=model,
+                model=GEMINI_MODEL_GENERAL,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=1500,        # razonamiento + ~450 palabras de síntesis
                 temperature=0.4,
@@ -232,12 +240,12 @@ def _call_llm_for_synthesis(prompt: str) -> str | None:
             text = response.choices[0].message.content.strip()
             if text:
                 return text
-            logger.warning(f"[synthesis] {model} devolvió contenido vacío, probando siguiente")
+            logger.warning(f"[synthesis] Intento {intento + 1}: contenido vacío, reintentando")
         except Exception as e:
-            logger.warning(f"[synthesis] {model} falló ({e}), probando siguiente modelo")
+            logger.warning(f"[synthesis] Intento {intento + 1} falló ({e})")
             continue
 
-    logger.warning("[synthesis] Todos los modelos de la cadena fallaron para la síntesis")
+    logger.warning("[synthesis] No se pudo generar la síntesis tras los reintentos")
     return None
 
 

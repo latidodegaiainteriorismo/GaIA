@@ -61,6 +61,25 @@ MIN_VEC_SIMILARITY = 0.68    # descarta coincidencias vectoriales demasiado debi
 CONTEXT_WINDOW = 1           # mensajes de contexto antes/despues de cada hallazgo
 RRF_K = 60                   # constante estandar de Reciprocal Rank Fusion
 
+# Longitud mínima (en caracteres, ya sin espacios sobrantes) para que un
+# mensaje active la búsqueda profunda de memoria. Mensajes más cortos
+# (saludos, "gracias", "sí", "vale", "ok", "jaja") no tienen contenido
+# suficiente para buscar patrones de fondo ni similitud semántica útil —
+# saltarlos evita una llamada de pago al LLM (_expand_memory_themes) y una
+# llamada de embedding por cada mensaje trivial, sin ninguna pérdida de
+# calidad (no hay memoria relevante que un "hola" pudiera recuperar).
+_MIN_LEN_PARA_MEMORIA = 15
+
+# Mensajes que, aunque superen el umbral de longitud, son puro trámite
+# conversacional y no justifican búsqueda de memoria. Se comparan en
+# minúsculas y sin signos de puntuación.
+_MENSAJES_TRIVIALES = {
+    'hola', 'buenas', 'buenos dias', 'buenas tardes', 'buenas noches',
+    'gracias', 'muchas gracias', 'vale', 'ok', 'okay', 'de acuerdo',
+    'perfecto', 'genial', 'entiendo', 'entendido', 'claro', 'si', 'sí',
+    'no', 'adios', 'adiós', 'hasta luego', 'chao', 'buenas noches gaia',
+}
+
 # Palabras vacías/genéricas en español: no aportan nada a una búsqueda de
 # relevancia y, al aparecer en casi cualquier mensaje personal, disparaban
 # matches FTS espurios (ej. "nosotros", "nuestro" en una pregunta filosófica
@@ -307,6 +326,16 @@ def search_user_memory(user_id: str, message: str, exclude_conv_id: str | None =
         — cada elemento es un hallazgo YA acompanado de su contexto.
     """
     literal_terms = _extract_search_terms(message)
+
+    # Cortocircuito de coste: mensajes triviales (saludos, confirmaciones) no
+    # justifican la búsqueda profunda — ni _expand_memory_themes (llamada de
+    # pago al LLM) ni el embedding. Se salta ANTES de gastar nada. No hay
+    # pérdida de calidad: un "hola" o un "gracias" no tiene memoria relevante
+    # que recuperar.
+    msg_normalizado = message.strip().lower().rstrip('.!?¿¡ ')
+    if len(message.strip()) < _MIN_LEN_PARA_MEMORIA or msg_normalizado in _MENSAJES_TRIVIALES:
+        return []
+
     expanded_themes = _expand_memory_themes(message)
     all_terms = literal_terms + expanded_themes
 

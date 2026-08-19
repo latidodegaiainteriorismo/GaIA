@@ -24,30 +24,39 @@ chat_bp = Blueprint('chat', __name__)
 
 # ── Presupuesto de contexto (FASE 0) ──────────────────────────────────────────
 #
-# Los modelos actuales de Groq tienen un límite de 8K TPM. El ADN ocupa ~4.500
-# tokens, así que todo lo demás comparte el hueco que queda. Se mide antes de
-# cada llamada y se recorta por orden de prioridad si no cabe.
+# MIGRACIÓN (19-ago-2026): tras pasar de Groq (8K TPM) a Gemini 3.5
+# Flash-Lite (~1M de contexto, ver config.py), el límite de 2.600 tokens
+# quedó obsoleto — era una restricción impuesta por el TPM estrecho de
+# Groq, no por ninguna necesidad real de GaIA. Subido a 20.000: cubre con
+# holgura el peor caso real visto en producción (11.402 tokens estimados,
+# con el router activando 5 documentos del catálogo a la vez + memoria
+# profunda + histórico cruzado), dejando margen para preguntas aún más
+# exigentes sin gastar de más innecesariamente en cada llamada.
 #
-# CORRECCIÓN (19-ago-2026): la intención original era que la memoria profunda
-# (FASE 2) nunca se descartara por ser la pieza de mayor impacto — pero como
-# se concatena DENTRO de cross_memory (ver más abajo, `cross_memory =
-# cross_memory + deep_memory`), y cross_memory estaba PRIMERO en el orden de
-# recorte, en la práctica la memoria profunda era justo lo primero que se
-# tiraba en cualquier pregunta con contexto grande. Esto causó un bug real:
-# una pregunta de resumen conceptual trajo memoria episódica de un tema
-# personal no relacionado (activada por la expansión de temas de
-# memory_search.py) y, al no caber el resto del contexto, knowledge_context
-# sobrevivió mientras cross_memory (con sus instrucciones de "no fuerces la
-# conexión si no encaja") se perdió — la respuesta acabó mezclando contenido
-# sin la salvaguarda que debía filtrarlo.
+# El orden de recorte y la lógica de truncado (en vez de descarte total)
+# de cross_memory se conservan sin cambios — siguen siendo la salvaguarda
+# correcta para el caso extremo en que, pese al presupuesto mucho mayor,
+# el contexto combinado lo siga superando.
 #
-# Orden nuevo: cross_memory (incluida la memoria profunda) se recorta EN
-# ÚLTIMO lugar, tal como decía la intención original. knowledge y astrology
-# se descartan antes porque son más reemplazables por el conocimiento
-# general del modelo; la memoria de usuario no tiene sustituto.
+# CORRECCIÓN (19-ago-2026, previa a la migración): la intención original
+# era que la memoria profunda (FASE 2) nunca se descartara por ser la
+# pieza de mayor impacto — pero como se concatena DENTRO de cross_memory
+# (ver más abajo, `cross_memory = cross_memory + deep_memory`), y
+# cross_memory estaba PRIMERO en el orden de recorte, en la práctica la
+# memoria profunda era justo lo primero que se tiraba en cualquier
+# pregunta con contexto grande. Esto causó un bug real: una pregunta de
+# resumen conceptual trajo memoria episódica de un tema personal no
+# relacionado, y al no caber el resto del contexto, knowledge_context
+# sobrevivió mientras cross_memory (con sus instrucciones de "no fuerces
+# la conexión si no encaja") se perdió.
+#
+# Orden: cross_memory (incluida la memoria profunda) se recorta EN ÚLTIMO
+# lugar. knowledge y astrology se descartan antes por ser más reemplazables
+# por el conocimiento general del modelo; la memoria de usuario no tiene
+# sustituto.
 
 _CHARS_POR_TOKEN    = 3.6
-_MAX_CONTEXT_TOKENS = 2600
+_MAX_CONTEXT_TOKENS = 20000
 _ORDEN_DE_RECORTE   = ['astrology', 'knowledge', 'cross_memory']
 _MSGS_CONVERSACION_ACTIVA = 30
 

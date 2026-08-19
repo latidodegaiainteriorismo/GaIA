@@ -101,8 +101,17 @@ def _expand_memory_themes(message: str) -> list[str]:
                     "Devuelve 4-6 conceptos breves en espanol que describan esos patrones "
                     "de fondo (no resumas el mensaje, extrae los patrones). "
                     "Responde UNICAMENTE con JSON: {\"temas\": [\"...\", \"...\"]}. "
-                    "Si el mensaje es puramente tecnico/neutro sin carga relacional o "
-                    "emocional, responde {\"temas\": []}."
+                    "Devuelve {\"temas\": []} en DOS casos, no solo uno: "
+                    "(1) el mensaje es puramente tecnico/neutro sin carga relacional o "
+                    "emocional; (2) el mensaje pregunta sobre un tema conceptual, "
+                    "filosofico, espiritual o de proposito compartido (ej. 'que sabes de "
+                    "nosotros y de la Era en la que vivimos', 'cual es nuestro proposito') "
+                    "SIN que la persona exprese una emocion o situacion personal concreta "
+                    "en ese mismo mensaje — estas preguntas buscan una respuesta conceptual, "
+                    "no requieren desenterrar patrones emocionales de conversaciones pasadas. "
+                    "No conviertas una pregunta conceptual en una lectura psicologica solo "
+                    "porque el tema en si (proposito, sentido, trascendencia) suena profundo: "
+                    "profundidad tematica no es lo mismo que carga emocional personal."
                 )
             }, {
                 "role": "user",

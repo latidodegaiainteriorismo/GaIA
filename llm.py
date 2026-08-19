@@ -12,6 +12,17 @@ from config import (
 
 logger = logging.getLogger(__name__)
 
+# max_tokens de la respuesta PRINCIPAL de GaIA. Alineado con lo que el ADN
+# pide explícitamente en su sección 10 ("max_tokens: 1500 a 2000, impide que
+# la API recorte las explicaciones profundas"). CORRECCIÓN (19-ago-2026):
+# call_groq() no pasaba este valor a _call_with_fallback antes de este
+# ajuste, así que la llamada real usaba el valor por defecto de la función
+# (1024) — muy por debajo de lo que el propio ADN pedía, lo cual podía
+# cortar respuestas densas a mitad de frase incluso con Gemini y su margen
+# de contexto mucho mayor. 1800 tokens: dentro del rango 1500-2000 del ADN,
+# con margen para no rozar el límite superior en cada respuesta.
+_MAX_TOKENS_RESPUESTA = 1800
+
 # ── Clientes ───────────────────────────────────────────────────────────────────
 #
 # MIGRACIÓN (19-ago-2026): Gemini es ahora el proveedor principal, llamado a
@@ -250,7 +261,8 @@ def call_groq(history: list, cross_memory: str = '', knowledge_context: str = ''
     logger.info(f'[LLM] Llamando Gemini (general) | msgs={len(messages)} | '
                f'model={GEMINI_MODEL_GENERAL} | rag={bool(knowledge_context)}')
 
-    response = _call_with_fallback(GEMINI_MODEL_GENERAL, GROQ_MODELS_GENERAL, messages)
+    response = _call_with_fallback(GEMINI_MODEL_GENERAL, GROQ_MODELS_GENERAL, messages,
+                                    max_tokens=_MAX_TOKENS_RESPUESTA)
     logger.info(f'[LLM] ✅ Respuesta: {len(response)} chars')
     return response
 

@@ -9,17 +9,19 @@ logger = logging.getLogger(__name__)
 
 # ── Límite de texto para síntesis de voz ──────────────────────────────────────
 #
-# GaIA está diseñada para dar respuestas densas (max_tokens 1500-2000 en el
-# ADN, ~6.000-8.000 caracteres). Sintetizar TODO ese texto en un worker de
-# 512MB (Render free, WEB_CONCURRENCY=1) provocó un SIGKILL por OOM el
-# 2026-08-19: edge_tts acumula todos los audio_chunks en RAM antes de
-# devolver nada, y un texto largo dispara un pico de memoria que el worker
-# no soporta si coincide con otra carga (embeddings, consolidación, etc.).
+# AJUSTE (19-ago-2026): subido de 1200 a 8000 chars para que GaIA lea las
+# respuestas completas. 8000 cubre el máximo absoluto que puede generar
+# Gemini con max_tokens=1800 (~7200 chars de texto bruto, ~6000 tras limpiar
+# markdown) con un 10% de margen adicional.
 #
-# Esto NO afecta al texto mostrado ni al guardado en base de datos — solo
-# recorta lo que se convierte a audio. El usuario siempre puede leer la
-# respuesta completa en pantalla; el audio cubre el arranque de la idea.
-_TTS_MAX_CHARS = 1200
+# AVISO: el límite original de 1200 se puso tras un SIGKILL por OOM (Render
+# free tier, 512MB) el 19-ago-2026 — edge_tts acumula todos los chunks de
+# audio en RAM antes de devolver nada, y textos largos disparan un pico de
+# memoria que puede matar el worker si coincide con otra carga pesada
+# (embeddings, consolidación). Con 8000 chars ese riesgo vuelve a existir.
+# Si los workers empiezan a caer de nuevo, la solución de raíz es subir
+# el plan de Render a Starter (2GB RAM, ~$7/mes) en vez de volver a truncar.
+_TTS_MAX_CHARS = 8000
 
 # Signos de cierre de frase considerados para cortar limpio. Se busca el
 # último de estos ANTES del límite, para no cortar a mitad de frase.

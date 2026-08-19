@@ -1,6 +1,7 @@
 Flask
 flask-cors
 groq
+openai
 requests
 gunicorn
 google-auth

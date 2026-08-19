@@ -12,11 +12,15 @@ no decisión del LLM).
 
 import json
 import logging
-from groq import Groq
-from config import GROQ_API_KEY, GROQ_MODEL
+from config import GEMINI_MODEL
 
 logger = logging.getLogger(__name__)
-_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+
+# MIGRACIÓN (19-ago-2026): antes este módulo creaba su propio cliente Groq
+# independiente. Se cambia a reutilizar el cliente ya inicializado en llm.py
+# (apuntando a Gemini tras la migración), igual que ya hacían user_profile.py
+# y memory_search.py — un único cliente HTTP para todo el preproceso, en vez
+# de instancias sueltas por módulo.
 
 # ── Catálogo de documentos ────────────────────────────────────────────────────
 # Clave: fragmento distintivo que debe aparecer en el nombre de archivo (source)
@@ -104,7 +108,8 @@ def _build_catalog_text() -> str:
 
 def preprocess_query(message: str) -> dict:
     """
-    Le pide a Groq que interprete la pregunta del usuario y decida:
+    Le pide al LLM de preproceso (Gemini, ver llm.py) que interprete la
+    pregunta del usuario y decida:
     - qué documentos del catálogo son relevantes (por su clave exacta)
     - palabras clave expandidas para mejorar el FTS
     - si hace falta recurrir a la web porque el conocimiento propio no basta
@@ -112,6 +117,7 @@ def preprocess_query(message: str) -> dict:
     Devuelve dict con: {"documents": [...], "keywords": [...], "needs_web": bool}
     En caso de error, devuelve un fallback seguro (sin documentos extra, sin web).
     """
+    from llm import _client
     if not _client:
         return {"documents": [], "keywords": [message], "needs_web": False}
 
@@ -146,22 +152,15 @@ Pregunta del usuario: {message}"""
 
     try:
         response = _client.chat.completions.create(
-            model=GROQ_MODEL,
+            model=GEMINI_MODEL,
             messages=[{"role": "user", "content": prompt}],
-            # NOTA (13-ago-2026): GROQ_MODEL apunta ahora a un modelo de la
-            # familia gpt-oss (ver config.py), que por defecto "razona"
-            # internamente (chain-of-thought) antes de escribir la
-            # respuesta — y esos tokens de razonamiento se descuentan del
-            # MISMO max_tokens que el de la respuesta final. Con
-            # max_tokens=200 y razonamiento en modo "medium" (el valor por
-            # defecto de Groq para estos modelos), el modelo agotaba el
-            # presupuesto pensando y no le quedaba espacio para escribir el
-            # JSON — de ahí los fallos vistos en logs: contenido vacío o
-            # cortado a mitad de una cadena. reasoning_effort="low" reduce
-            # ese consumo al mínimo para esta tarea (que no necesita
-            # razonamiento complejo, solo clasificar contra un catálogo
-            # fijo), y max_tokens=400 da margen de sobra para el JSON
-            # completo aunque el modelo decida razonar algo de todos modos.
+            # NOTA (19-ago-2026): tras la migración a Gemini, reasoning_effort
+            # sigue siendo un parámetro válido a través del endpoint
+            # compatible con OpenAI (ai.google.dev/gemini-api/docs/openai).
+            # Se mantiene "low" por el mismo motivo original: esta tarea es
+            # clasificación contra un catálogo fijo, no necesita razonamiento
+            # profundo, así que un esfuerzo bajo basta y deja más margen de
+            # max_tokens para la respuesta JSON en sí.
             max_tokens=400,
             temperature=0.2,
             reasoning_effort="low",

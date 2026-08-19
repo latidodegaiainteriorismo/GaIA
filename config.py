@@ -1,62 +1,56 @@
 import os
 
 # ── LLM ───────────────────────────────────────────────────────────────────────
-GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '')
+#
+# MIGRACIÓN (19-ago-2026): de Groq (gratis, 8K TPM) a Gemini (de pago, ~1M de
+# contexto). Motivo: el tier gratuito de Groq resultó estructuralmente
+# insuficiente para el volumen de contexto que GaIA necesita (ADN ~4.500
+# tokens + memoria + knowledge + astrología, fácilmente 10-15K tokens en
+# preguntas con varios documentos activados), causando recortes agresivos y
+# pérdida de memoria/conocimiento de forma recurrente. Ver conversación de
+# diagnóstico del 19-ago-2026 para el detalle completo.
+#
+# Gemini se llama a través de su endpoint compatible con la API de OpenAI
+# (ai.google.dev/gemini-api/docs/openai) — mismo cliente `openai`, solo
+# cambia base_url, api_key y nombre de modelo. Esto significa que casi todo
+# el código que ya usaba `_client.chat.completions.create(...)` sigue
+# funcionando sin tocar, incluido `reasoning_effort` (soportado por Gemini
+# a través de este endpoint).
+GEMINI_API_KEY  = os.environ.get('GEMINI_API_KEY', '')
+GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai/'
 
-# Cadenas de modelos por dominio, en orden de preferencia. Si el primero
-# devuelve rate-limit (429) o payload-too-large (413 por exceso de TPM),
-# se prueba el siguiente de la lista. Todos gratuitos en Groq a fecha jul-2026.
+# Gemini 3.5 Flash-Lite: elegido tras comparar coste/beneficio con Gemini
+# 3.6/3.7 Flash y Claude Haiku 4.5 (ver conversación de decisión). Sale más
+# barato que las otras opciones serias evaluadas y la prueba en el
+# Playground de AI Studio (con el ADN completo + contexto simulado) mostró
+# calidad conceptual y densidad asociativa acordes al ADN de GaIA.
+GEMINI_MODEL_GENERAL   = 'gemini-3.5-flash-lite'
+GEMINI_MODEL_ASTROLOGY = 'gemini-3.5-flash-lite'
+
+# Retrocompatibilidad: código de preproceso (query_router.py, user_profile.py,
+# memory_search.py) importaba GROQ_MODEL/GROQ_MODEL_FALLBACK directamente.
+# Apuntan ahora al mismo modelo Gemini — con el margen de contexto/TPM que
+# da Gemini, ya no hace falta la lógica de "modelo distinto para evitar
+# colisión de cuota" que existía cuando todo compartía 8K TPM en Groq.
+GEMINI_MODEL          = GEMINI_MODEL_GENERAL
+GEMINI_MODEL_FALLBACK = GEMINI_MODEL_GENERAL
+
+# ── GROQ (fallback de emergencia) ─────────────────────────────────────────────
 #
-# Límites reales del tier gratuito (consultados en console.groq.com/settings/limits
-# el 6-jul-2026) — ojo, son POR MODELO, no compartidos entre todos:
-#
-#   meta-llama/llama-4-scout-17b-16e-instruct : 30K TPM / 500K TPD  ← el más holgado
-#   llama-3.3-70b-versatile                   : 12K TPM / 100K TPD
-#   llama-3.1-8b-instant                      :  6K TPM / 500K TPD
-#   openai/gpt-oss-120b                       :  8K TPM / 200K TPD
-#   openai/gpt-oss-20b                        :  8K TPM / 200K TPD
-#   qwen/qwen3.6-27b                          :  8K TPM / 200K TPD
-#
-# NOTA (25-jul-2026): meta-llama/llama-4-scout-17b-16e-instruct fue retirado
-# por Groq el 17-jul-2026 (404 model_not_found). llama-3.3-70b-versatile y
-# llama-3.1-8b-instant también están deprecados, con apagado programado para
-# el 16-ago-2026 — así que se migran también, aunque técnicamente sigan
-# funcionando por ahora. Cadena nueva usando los 3 modelos recomendados por
-# Groq como reemplazo estable (ver console.groq.com/docs/deprecations).
-#
-# Aviso: estos 3 modelos comparten el mismo límite bajo de TPM (8K) que
-# teníamos con gpt-oss-120b/20b y qwen3.6-27b antes de encontrar
-# llama-4-scout — el margen es más ajustado que con el modelo anterior.
+# Se mantiene configurado pero DEJA de ser el proveedor principal. Si algún
+# día Gemini tiene una caída de servicio, llm.py puede recurrir a esta
+# cadena como red de seguridad. No se borra GROQ_API_KEY de Render.
+GROQ_API_KEY = os.environ.get('GROQ_API_KEY', '')
 GROQ_MODELS_GENERAL = [
     'openai/gpt-oss-120b',
     'qwen/qwen3.6-27b',
     'openai/gpt-oss-20b',
 ]
-
 GROQ_MODELS_ASTROLOGY = [
     'openai/gpt-oss-20b',
     'qwen/qwen3.6-27b',
     'openai/gpt-oss-120b',
 ]
-
-# NOTA (13-ago-2026): GROQ_MODEL se usa para las llamadas de PRE-PROCESO
-# (query_router.py, detección de perfil en user_profile.py, expansión de
-# memoria) — nunca para la respuesta final de GaIA, que siempre recorre
-# GROQ_MODELS_GENERAL desde el principio. Antes GROQ_MODEL apuntaba a
-# GROQ_MODELS_GENERAL[0] (gpt-oss-120b) — el MISMO modelo que la respuesta
-# principal intenta primero — así que un solo mensaje del usuario disparaba
-# dos llamadas distintas al mismo modelo, compitiendo por el mismo cupo de
-# 8K TPM en el mismo minuto. Eso causó, el mismo día, fallos de router (JSON
-# cortado a mitad de generación por falta de cupo) y 413 en cadena en los
-# tres modelos a la vez.
-#
-# Apunta ahora al último de la cadena general (el que menos se usa, porque
-# solo entra en juego si los otros dos ya devolvieron 429/413) para
-# minimizar la colisión. No la elimina del todo — solo hay 3 modelos
-# estables disponibles en total en el tier gratuito — pero reduce mucho la
-# probabilidad de que el router y la respuesta principal choquen a la vez.
-GROQ_MODEL          = GROQ_MODELS_GENERAL[2]   # gpt-oss-20b
-GROQ_MODEL_FALLBACK = GROQ_MODELS_GENERAL[1]   # qwen3.6-27b
 
 # ── BASE DE DATOS ─────────────────────────────────────────────────────────────
 DATABASE_URL = os.environ.get('DATABASE_URL', '')
@@ -79,7 +73,5 @@ EMBEDDING_DIMENSIONS   = 384
 # ── MEMORIA ───────────────────────────────────────────────────────────────────
 MAX_CONV_TOKENS        = 1200   # Comprimir conversación si supera este límite
 MEMORY_TOP_K           = 3      # Top-K episodios relevantes del usuario
-KNOWLEDGE_TOP_K        = 2      # Top-K chunks de la base de conocimiento (bajado de 5 para ahorrar tokens/día en Groq)
+KNOWLEDGE_TOP_K        = 2      # Top-K chunks de la base de conocimiento
 IMPORTANCE_THRESHOLD   = 7      # Mínimo (sobre 10) para guardar episodio
-
-

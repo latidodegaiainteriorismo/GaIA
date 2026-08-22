@@ -9,6 +9,7 @@ from routes.chat          import chat_bp
 from routes.ingest        import ingest_bp
 from routes.astrology     import astrology_bp
 from routes.dev           import dev_bp
+from routes.audio         import audio_bp
 # ── LOGGING ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -27,6 +28,7 @@ app.register_blueprint(maintenance_bp)
 app.register_blueprint(ingest_bp)
 app.register_blueprint(astrology_bp)
 app.register_blueprint(dev_bp)
+app.register_blueprint(audio_bp)
 # ── HEALTH ────────────────────────────────────────────────────────────────────
 @app.route('/health', methods=['GET'])
 def health():

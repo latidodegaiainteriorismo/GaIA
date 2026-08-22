@@ -5,9 +5,10 @@ from flask import request, jsonify, g
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 from db import db_one, db_run
-from config import GOOGLE_CLIENT_ID, DEVELOPER_EMAIL
+from config import GOOGLE_CLIENT_ID, DEVELOPER_EMAIL, CREATOR_EMAIL
 
 logger = logging.getLogger(__name__)
+
 
 def get_user_from_token(token: str):
     """Valida el token de sesión y devuelve user_id o None."""
@@ -19,12 +20,14 @@ def get_user_from_token(token: str):
     )
     return str(row['user_id']) if row else None
 
+
 def get_user_email(user_id: str) -> str | None:
     """Devuelve el email del usuario, o None si no existe."""
     if not user_id:
         return None
     row = db_one("SELECT email FROM users WHERE id = %s", (user_id,))
     return row['email'] if row else None
+
 
 def is_developer(user_id: str) -> bool:
     """
@@ -34,6 +37,26 @@ def is_developer(user_id: str) -> bool:
     """
     email = get_user_email(user_id)
     return bool(email) and email.lower() == DEVELOPER_EMAIL.lower()
+
+
+def is_creator(user_id: str) -> bool:
+    """
+    Comprueba si el usuario es el creator de GaIA (latidodegaiainteriorismo@gmail.com).
+    El creator tiene permisos especiales:
+      - Acceso a fragmentos literales de cualquier documento, incluido el ADN
+      - Subida de audios como preguntas, con transcripción y almacenamiento chunkeado
+      - Visibilidad de audio_chunks en modo 'creator' (privado hasta promoción)
+
+    El developer (Adrián con su email personal) también recibe permisos de creator
+    automáticamente — es el mismo proyecto, Adrián actúa en ambos roles.
+    """
+    email = get_user_email(user_id)
+    if not email:
+        return False
+    email_lower = email.lower()
+    return (email_lower == CREATOR_EMAIL.lower() or
+            email_lower == DEVELOPER_EMAIL.lower())
+
 
 def require_auth(f):
     """Decorador: requiere sesión válida. Inyecta g.user_id."""
@@ -46,6 +69,7 @@ def require_auth(f):
         g.user_id = user_id
         return f(*args, **kwargs)
     return decorated
+
 
 def require_developer(f):
     """Decorador: requiere sesión válida Y ser el desarrollador. Inyecta g.user_id."""
@@ -61,6 +85,26 @@ def require_developer(f):
         return f(*args, **kwargs)
     return decorated
 
+
+def require_creator(f):
+    """
+    Decorador: requiere sesión válida Y ser el creator (o el desarrollador).
+    Usado para endpoints de subida de audio y acceso literal a documentos.
+    Inyecta g.user_id.
+    """
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        token   = request.headers.get('Authorization', '').replace('Bearer ', '')
+        user_id = get_user_from_token(token)
+        if not user_id:
+            return jsonify({'error': 'No autorizado'}), 401
+        if not is_creator(user_id):
+            return jsonify({'error': 'Acción restringida al creator'}), 403
+        g.user_id = user_id
+        return f(*args, **kwargs)
+    return decorated
+
+
 def verify_google_token(credential: str) -> dict | None:
     """Verifica el token de Google y devuelve el payload o None si es inválido."""
     try:
@@ -72,6 +116,7 @@ def verify_google_token(credential: str) -> dict | None:
     except ValueError as e:
         logger.error(f'[Auth] Token Google inválido: {e}')
         return None
+
 
 def create_session(user_id: str) -> str:
     """Crea una nueva sesión y devuelve el token."""

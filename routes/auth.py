@@ -1,7 +1,7 @@
 import logging
 from flask import Blueprint, request, jsonify, g
 from db import db_one
-from auth import verify_google_token, create_session, require_auth
+from auth import verify_google_token, create_session, require_auth, is_creator
 
 logger  = logging.getLogger(__name__)
 auth_bp = Blueprint('auth', __name__)
@@ -30,9 +30,10 @@ def auth_google():
     if not user:
         return jsonify({'error': 'Error al crear usuario'}), 500
 
-    token = create_session(str(user['id']))
-    logger.info(f'[Auth] Login OK: {email}')
-    return jsonify({'token': token, 'username': user['username']})
+    token      = create_session(str(user['id']))
+    creator    = is_creator(str(user['id']))
+    logger.info(f'[Auth] Login OK: {email} | creator={creator}')
+    return jsonify({'token': token, 'username': user['username'], 'is_creator': creator})
 
 @auth_bp.route('/auth/logout', methods=['POST'])
 @require_auth

@@ -122,7 +122,8 @@ def create_session(user_id: str) -> str:
     """Crea una nueva sesión y devuelve el token."""
     token = secrets.token_urlsafe(32)
     db_run(
-        "INSERT INTO sessions (user_id, token) VALUES (%s, %s)",
+        "INSERT INTO sessions (user_id, token, expires_at) "
+        "VALUES (%s, %s, NOW() + INTERVAL '30 days')",
         (user_id, token)
     )
     return token

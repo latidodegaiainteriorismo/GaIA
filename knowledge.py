@@ -243,3 +243,120 @@ def format_knowledge_context(chunks: list, web_context: str = "") -> str:
         parts.append(web_context)
 
     return "\n\n".join(parts)
+
+
+# ── Audio knowledge (solo para el creator) ────────────────────────────────────
+
+def search_audio_chunks(message: str, user_id: str, top_k: int = 3) -> list[dict]:
+    """
+    Busca en los audio_chunks del creator usando FTS en español.
+    Solo devuelve chunks visibles para el creator (visibility IN ('creator','all')).
+    Incluye el filename y start_time para que GaIA pueda citar el audio
+    con marca de tiempo.
+
+    Se usa exclusivamente desde search_knowledge_creator — no sustituye a
+    search_knowledge, lo complementa.
+    """
+    terms = _extract_search_terms(message)
+    if not terms:
+        return []
+
+    or_query = _build_or_query(terms)
+    if not or_query:
+        return []
+
+    rows = db_all(
+        """
+        SELECT
+            ac.content,
+            ac.start_time,
+            ac.end_time,
+            af.filename,
+            af.title,
+            ts_rank(to_tsvector('spanish', ac.content),
+                    websearch_to_tsquery('spanish', %s)) AS score
+        FROM audio_chunks ac
+        JOIN audio_files af ON af.id = ac.audio_file_id
+        WHERE af.user_id = %s
+          AND ac.visibility IN ('creator', 'all')
+          AND to_tsvector('spanish', ac.content)
+              @@ websearch_to_tsquery('spanish', %s)
+        ORDER BY score DESC
+        LIMIT %s
+        """,
+        (or_query, user_id, or_query, top_k)
+    )
+
+    # Añadir source con formato timestamp para que GaIA pueda citarlo
+    for row in (rows or []):
+        mins  = int(row['start_time'] // 60)
+        secs  = int(row['start_time'] % 60)
+        row['source'] = f"audio:{row['filename']}@{mins}:{secs:02d}"
+
+    if rows:
+        logger.info(f'[knowledge] Audio chunks del creator: {len(rows)} hallazgos')
+    return rows or []
+
+
+def search_knowledge_creator(message: str, user_id: str):
+    """
+    Versión extendida de search_knowledge para el creator:
+      1. Todo lo que hace search_knowledge (Mónica + routing + web fallback)
+      2. Además busca en audio_chunks del creator con timestamp
+      3. Incluye acceso al ADN como documento consultable
+
+    La instrucción al LLM en chat.py ya contempla que el creator puede pedir
+    citas literales de cualquier documento incluyendo el ADN.
+    """
+    chunks, web_context = search_knowledge(message)
+
+    # Buscar en audio_chunks del creator
+    audio_chunks = search_audio_chunks(message, user_id, top_k=3)
+    if audio_chunks:
+        chunks = chunks + audio_chunks
+
+    return chunks, web_context
+
+
+def format_knowledge_context_creator(chunks: list, web_context: str = '',
+                                     include_dna: bool = False) -> str:
+    """
+    Versión del formateador de contexto para el creator.
+    - Usa citación extendida: muestra nombre del documento Y timestamp si es audio.
+    - Si include_dna=True, añade una nota indicando que el creator puede
+      pedir citas literales del ADN.
+    """
+    parts = []
+
+    if include_dna:
+        parts.append(
+            '[NOTA PARA GAIA — SOLO VISIBLE CON EL CREATOR]\n'
+            'El interlocutor es Mónica o Adrián, co-creadores de GaIA. '
+            'Puedes citar fragmentos literales de cualquier documento de tu '
+            'biblioteca, incluyendo tu propio ADN (gaia_dna.txt) si te lo '
+            'piden. Cita siempre la fuente entre corchetes. Para audios, '
+            'cita el título del audio y el minuto exacto: '
+            '[Audio: "Título del audio", 3:24].'
+        )
+
+    if chunks:
+        lines = ['[Conocimiento relevante de la biblioteca de GaIA]']
+        for chunk in chunks:
+            source = chunk.get('source', '')
+            if source.startswith('audio:'):
+                # Formato: audio:filename.webm@3:24
+                # Mostrar como: Audio "Título" [3:24]
+                title   = chunk.get('title', source)
+                mins    = int(chunk.get('start_time', 0) // 60)
+                secs    = int(chunk.get('start_time', 0) % 60)
+                display = f'Audio "{title}" [{mins}:{secs:02d}]'
+            else:
+                display = source.split('/')[-1].replace('.txt', '')
+            lines.append(f'\n— {display}')
+            lines.append(chunk.get('content', '').strip())
+        parts.append('\n'.join(lines))
+
+    if web_context:
+        parts.append(web_context)
+
+    return '\n\n'.join(parts)

@@ -138,6 +138,23 @@ def _transcribe(audio_bytes: bytes, filename: str) -> dict | None:
 
 # ── Chunking del transcript ────────────────────────────────────────────────────
 
+def _seg_get(seg, key: str):
+    """
+    Acceso uniforme a un campo de segmento de Whisper, funcione con el
+    formato dict (el que realmente devuelve el SDK de Groq) o con un
+    objeto con atributos (por si en algún momento el SDK cambia).
+
+    CORRECCIÓN (25-ago-2026): el código asumía que `response.segments` eran
+    objetos (`seg.text`, `seg.start`, `seg.end`), pero Groq los devuelve
+    como diccionarios planos (`seg['text']`, etc.) — de ahí el error real
+    visto en producción: "AttributeError: 'dict' object has no attribute
+    'end'". Esta función evita que vuelva a pasar sea cual sea el formato.
+    """
+    if isinstance(seg, dict):
+        return seg[key]
+    return getattr(seg, key)
+
+
 def _chunk_transcript(segments: list, words_per_chunk: int = AUDIO_CHUNK_WORDS) -> list[dict]:
     """
     Agrupa los segmentos de Whisper en chunks de ~words_per_chunk palabras,
@@ -157,17 +174,18 @@ def _chunk_transcript(segments: list, words_per_chunk: int = AUDIO_CHUNK_WORDS) 
     t_start  = 0.0
 
     for seg in segments:
-        seg_words = len(seg.text.split())
+        seg_text  = _seg_get(seg, 'text')
+        seg_words = len(seg_text.split())
         if not current:
-            t_start = seg.start
+            t_start = _seg_get(seg, 'start')
         current.append(seg)
         words += seg_words
 
         if words >= words_per_chunk:
             chunks.append({
-                'content':    ' '.join(s.text.strip() for s in current),
+                'content':    ' '.join(_seg_get(s, 'text').strip() for s in current),
                 'start_time': t_start,
-                'end_time':   current[-1].end,
+                'end_time':   _seg_get(current[-1], 'end'),
             })
             current = []
             words   = 0
@@ -175,9 +193,9 @@ def _chunk_transcript(segments: list, words_per_chunk: int = AUDIO_CHUNK_WORDS) 
     # Último chunk parcial (si quedaron segmentos sin cerrar)
     if current:
         chunks.append({
-            'content':    ' '.join(s.text.strip() for s in current),
+            'content':    ' '.join(_seg_get(s, 'text').strip() for s in current),
             'start_time': t_start,
-            'end_time':   current[-1].end,
+            'end_time':   _seg_get(current[-1], 'end'),
         })
 
     logger.info(f'[Audio] {len(segments)} segmentos → {len(chunks)} chunks')
@@ -274,7 +292,7 @@ def upload_audio():
 
     transcript_full = transcription.text
     segments        = transcription.segments
-    duration        = segments[-1].end if segments else 0.0
+    duration        = _seg_get(segments[-1], 'end') if segments else 0.0
 
     # 3. Chunkear el transcript
     raw_chunks = _chunk_transcript(segments)

@@ -25,7 +25,7 @@ from flask import Blueprint, request, jsonify, g
 from groq import Groq
 from db import db_one, db_all, db_run
 from auth import require_creator
-from embeddings import embed_text
+from embeddings import embed_text, vector_literal
 from config import (
     GROQ_API_KEY, WHISPER_MODEL, AUDIO_CHUNK_WORDS,
     SUPABASE_URL, SUPABASE_SERVICE_KEY, SUPABASE_AUDIO_BUCKET,
@@ -42,26 +42,42 @@ _gemini   = OpenAI(api_key=GEMINI_API_KEY, base_url=GEMINI_BASE_URL) if GEMINI_A
 
 # ── Helpers de Supabase Storage ───────────────────────────────────────────────
 
-def _storage_headers() -> dict:
+def _storage_headers(content_type: str = 'application/octet-stream') -> dict:
+    """
+    Cabeceras de autenticación para la API REST de Supabase Storage.
+
+    CORRECCIÓN (22-ago-2026): antes solo se enviaba 'Authorization: Bearer'.
+    Supabase Storage exige TAMBIÉN la cabecera 'apikey'. Sin ella, con las
+    claves de formato nuevo (sb_secret_...) el gateway intenta interpretar
+    el Bearer como un JWT y devuelve 403 'Invalid Compact JWS' — que es
+    exactamente el error que aparecía en los logs de Render.
+    """
     return {
+        'apikey':        SUPABASE_SERVICE_KEY,
         'Authorization': f'Bearer {SUPABASE_SERVICE_KEY}',
-        'Content-Type':  'application/octet-stream',
+        'Content-Type':  content_type,
     }
 
 
 def _upload_to_storage(path: str, data: bytes, content_type: str = 'audio/webm') -> bool:
     """Sube un archivo al bucket gaia-audios. Devuelve True si tuvo éxito."""
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        logger.error('[Audio Storage] Falta SUPABASE_URL o SUPABASE_SERVICE_KEY '
+                     'en las variables de entorno de Render')
+        return False
+
     url = f'{SUPABASE_URL}/storage/v1/object/{SUPABASE_AUDIO_BUCKET}/{path}'
-    headers = {
-        'Authorization': f'Bearer {SUPABASE_SERVICE_KEY}',
-        'Content-Type':  content_type,
-        'x-upsert':      'true',   # sobreescribe si ya existe (resubida)
-    }
+    headers = _storage_headers(content_type)
+    headers['x-upsert'] = 'true'   # sobreescribe si ya existe (resubida)
     try:
         r = http_requests.put(url, data=data, headers=headers, timeout=60)
         if r.status_code in (200, 201):
             return True
-        logger.error(f'[Audio Storage] Error {r.status_code}: {r.text[:200]}')
+        # Diagnóstico: el prefijo de la clave (no la clave) ayuda a saber si
+        # es de formato nuevo (sb_secret_) o legacy JWT (eyJ) sin exponerla.
+        prefijo = SUPABASE_SERVICE_KEY[:10] if SUPABASE_SERVICE_KEY else '(vacía)'
+        logger.error(f'[Audio Storage] Error {r.status_code}: {r.text[:200]} '
+                     f'| bucket={SUPABASE_AUDIO_BUCKET} | key_prefix={prefijo}...')
         return False
     except Exception as e:
         logger.error(f'[Audio Storage] Excepción al subir: {e}')
@@ -285,10 +301,18 @@ def upload_audio():
     audio_file_id = str(audio_row['id'])
 
     # 6. Insertar chunks con embeddings
+    # CORRECCIÓN (22-ago-2026): el embedding debe convertirse con
+    # vector_literal() al formato que espera pgvector ('[0.1,0.2,...]'),
+    # igual que hace episodic_memory.py. Antes se pasaba la lista de Python
+    # en crudo, y el INSERT fallaba silenciosamente (db_run captura la
+    # excepción y devuelve False) — los chunks nunca llegaban a guardarse.
+    # Además, embed_text() puede devolver None si HuggingFace falla; en ese
+    # caso el chunk se guarda igual, sin vector, para que al menos siga
+    # siendo buscable por FTS.
     chunks_ok = 0
     for i, chunk in enumerate(raw_chunks):
-        embedding = embed_text(chunk['content'])
-        source    = f'audio:{filename}@{chunk["start_time"]:.0f}s'
+        vec = embed_text(chunk['content'])
+        embedding_lit = vector_literal(vec) if vec else None
 
         ok = db_run(
             """
@@ -299,10 +323,12 @@ def upload_audio():
             """,
             (audio_file_id, i, chunk['content'],
              chunk['start_time'], chunk['end_time'],
-             embedding)
+             embedding_lit)
         )
         if ok:
             chunks_ok += 1
+        else:
+            logger.warning(f'[Audio] Chunk {i} no se pudo guardar')
 
     logger.info(f'[Audio] Procesado OK: id={audio_file_id}, '
                 f'chunks={chunks_ok}/{len(raw_chunks)}, título={title!r}')

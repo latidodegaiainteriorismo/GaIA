@@ -95,6 +95,40 @@ def _delete_from_storage(path: str) -> bool:
         return False
 
 
+def _create_signed_url(path: str, expires_in: int = 3600) -> str | None:
+    """
+    Genera una URL firmada temporal para reproducir/descargar un audio del
+    bucket privado gaia-audios. El bucket es privado a propósito (no
+    queremos que las grabaciones de Mónica/Adrián sean accesibles por URL
+    directa a nadie que la adivine) — la URL firmada es la única forma
+    correcta de servir el binario sin exponer la service key al frontend.
+
+    expires_in: segundos de validez (por defecto 1h, suficiente para
+    escuchar el audio completo sin tener que regenerar la URL a media
+    reproducción).
+    """
+    url = f'{SUPABASE_URL}/storage/v1/object/sign/{SUPABASE_AUDIO_BUCKET}/{path}'
+    try:
+        r = http_requests.post(
+            url,
+            json={'expiresIn': expires_in},
+            headers=_storage_headers('application/json'),
+            timeout=15,
+        )
+        if r.status_code != 200:
+            logger.error(f'[Audio Storage] Error firmando URL {r.status_code}: {r.text[:200]}')
+            return None
+        signed_path = r.json().get('signedURL')
+        if not signed_path:
+            return None
+        # signedURL viene relativa (ej. "/object/sign/bucket/path?token=...")
+        # — hay que anteponerle SUPABASE_URL + /storage/v1
+        return f'{SUPABASE_URL}/storage/v1{signed_path}'
+    except Exception as e:
+        logger.error(f'[Audio Storage] Excepción firmando URL: {e}')
+        return None
+
+
 # ── Transcripción con Whisper ──────────────────────────────────────────────────
 
 def _transcribe(audio_bytes: bytes, filename: str) -> dict | None:
@@ -358,6 +392,11 @@ def upload_audio():
         'duration':        duration,
         'chunks':          chunks_ok,
         'transcript_preview': transcript_full[:300] + ('...' if len(transcript_full) > 300 else ''),
+        # CORRECCIÓN (25-ago-2026): se añade el transcript COMPLETO (no solo
+        # el preview recortado) para que el frontend pueda usarlo como
+        # pregunta real del usuario en el chat tras guardar el audio —
+        # sin esto no había forma de incorporar el audio como mensaje.
+        'transcript_full': transcript_full,
     }), 201
 
 
@@ -378,6 +417,66 @@ def list_audios():
         (user_id,)
     )
     return jsonify({'audios': rows or []})
+
+
+@audio_bp.route('/audio/<audio_id>/chunks', methods=['GET'])
+@require_creator
+def get_audio_chunks(audio_id: str):
+    """
+    Devuelve la transcripción de un audio trocito a trocito, con el
+    timestamp exacto de cada fragmento — pensado para que el creator pueda
+    localizar visualmente en qué minuto se dijo algo concreto, sin tener
+    que escuchar el audio entero desde el principio.
+    """
+    user_id = g.user_id
+
+    # Verificar propiedad antes de listar chunks — evita que un id ajeno
+    # (aunque sea otro creator) devuelva contenido de otro usuario.
+    owns = db_one(
+        "SELECT id, filename, title, duration_seconds FROM audio_files "
+        "WHERE id = %s AND user_id = %s",
+        (audio_id, user_id)
+    )
+    if not owns:
+        return jsonify({'error': 'Audio no encontrado o sin permiso'}), 404
+
+    chunks = db_all(
+        "SELECT chunk_index, content, start_time, end_time "
+        "FROM audio_chunks WHERE audio_file_id = %s ORDER BY chunk_index ASC",
+        (audio_id,)
+    )
+    return jsonify({
+        'id':       audio_id,
+        'filename': owns['filename'],
+        'title':    owns['title'],
+        'duration': owns['duration_seconds'],
+        'chunks':   chunks or [],
+    })
+
+
+@audio_bp.route('/audio/<audio_id>/url', methods=['GET'])
+@require_creator
+def get_audio_url(audio_id: str):
+    """
+    Genera una URL firmada temporal para reproducir el audio original.
+    El frontend la usa directamente en un <audio src="..."> — válida 1h,
+    tiempo de sobra para escuchar la grabación completa sin que la URL
+    quede expuesta permanentemente (el bucket es privado a propósito).
+    """
+    user_id = g.user_id
+
+    row = db_one(
+        "SELECT storage_path FROM audio_files WHERE id = %s AND user_id = %s",
+        (audio_id, user_id)
+    )
+    if not row:
+        return jsonify({'error': 'Audio no encontrado o sin permiso'}), 404
+
+    signed_url = _create_signed_url(row['storage_path'])
+    if not signed_url:
+        return jsonify({'error': 'No se pudo generar la URL de reproducción'}), 500
+
+    return jsonify({'url': signed_url})
 
 
 @audio_bp.route('/audio/<audio_id>/title', methods=['PATCH'])

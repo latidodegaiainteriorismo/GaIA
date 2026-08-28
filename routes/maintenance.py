@@ -21,6 +21,7 @@ import logging
 from flask import Blueprint, request, jsonify
 from synthesis import run_consolidation
 from episodic_memory import backfill_embeddings
+from classification import run_classification_for_creator
 
 logger = logging.getLogger(__name__)
 maintenance_bp = Blueprint('maintenance', __name__)
@@ -46,6 +47,17 @@ def consolidate():
         resumen_sintesis   = run_consolidation(limit=_USERS_PER_RUN)
         resumen_embeddings = backfill_embeddings()
         resumen = {**resumen_sintesis, **resumen_embeddings}
+
+        # Clasificación de conversaciones del creator (Estructura Basal,
+        # Enciclopedia, Astrología) — aislada en su propio try/except para
+        # que un fallo aquí (p.ej. las tablas nuevas aún no migradas) no
+        # tumbe la síntesis ni el backfill de embeddings, que ya funcionaban.
+        try:
+            resumen_clasificacion = run_classification_for_creator()
+            resumen = {**resumen, **resumen_clasificacion}
+        except Exception as e:
+            logger.warning(f"[maintenance] Clasificación de creator falló (no crítico): {e}")
+
         return jsonify({'ok': True, **resumen})
     except Exception as e:
         logger.error(f"[maintenance] Error en consolidación: {e}")

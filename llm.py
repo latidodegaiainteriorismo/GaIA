@@ -103,6 +103,49 @@ def load_dna() -> str:
         return ''
 
 
+# Tope de notas de Estructura Basal inyectadas por respuesta — evita que el
+# bloque crezca sin límite a medida que se acumulan aprendizajes. Se
+# priorizan las más recientes (ORDER BY created_at DESC en la query).
+_MAX_BASAL_NOTES = 15
+
+
+def _load_basal_block() -> str:
+    """
+    Construye el bloque de 'Estructura Basal' — ajustes de comportamiento
+    aprendidos de conversaciones con el creator (ver classification.py) —
+    para inyectarlo en el system prompt de CUALQUIER usuario, justo después
+    del ADN. Es intencionadamente global: estos ajustes son sobre cómo
+    funciona GaIA en sí, no memoria personal de nadie.
+
+    Solo se inyectan las notas con active=true — desactivar una nota
+    (revertirla) la excluye de esta consulta inmediatamente, sin tocar el
+    ADN escrito a mano. Degrada con seguridad: si la tabla no existe aún o
+    la consulta falla, devuelve '' y la conversación sigue con normalidad.
+    """
+    try:
+        from db import db_all
+        rows = db_all(
+            "SELECT content FROM basal_notes WHERE active = true "
+            "ORDER BY created_at DESC LIMIT %s",
+            (_MAX_BASAL_NOTES,)
+        )
+    except Exception as e:
+        logger.warning(f'[LLM] No se pudo cargar Estructura Basal: {e}')
+        return ''
+
+    if not rows:
+        return ''
+
+    lineas = '\n'.join(f'- {r["content"]}' for r in rows)
+    return (
+        '\n\n## ESTRUCTURA BASAL — ajustes de comportamiento aprendidos\n'
+        'Estos son ajustes sobre tu propio funcionamiento, extraídos de '
+        'conversaciones con tus creadores. Intégralos en cómo respondes, '
+        'sin mencionarlos explícitamente salvo que te pregunten por ellos:\n'
+        f'{lineas}\n'
+    )
+
+
 def load_dna_astrologia() -> str:
     """
     Lee el ADN especializado en astrología (interpretación de cartas, tránsitos,
@@ -248,7 +291,8 @@ def call_groq(history: list, cross_memory: str = '', knowledge_context: str = ''
         GroqRateLimitError: si Gemini y el fallback de Groq fallan ambos.
     """
     dna    = load_dna()
-    system = (_current_datetime_block() + extra_system_prefix + dna + cross_memory +
+    basal  = _load_basal_block()
+    system = (_current_datetime_block() + extra_system_prefix + dna + basal + cross_memory +
               '\n\n' + _build_knowledge_block(knowledge_context))
     if astrology_context:
         system += '\n\n' + astrology_context
@@ -284,7 +328,8 @@ def call_groq_astrology(user_message: str, astrology_context: str) -> str:
     """
     dna_base      = load_dna()
     dna_astrology = load_dna_astrologia()
-    system = _current_datetime_block() + dna_base
+    basal         = _load_basal_block()
+    system = _current_datetime_block() + dna_base + basal
     if dna_astrology:
         system += '\n\n' + dna_astrology
     if astrology_context:

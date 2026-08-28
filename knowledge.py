@@ -73,10 +73,18 @@ def _build_or_query(terms: list[str]) -> str:
     return " OR ".join(unique_terms)
 
 
-def _fts_search(terms: list[str], source_filter: str = None, limit: int = 3) -> list[dict]:
+def _fts_search(terms: list[str], source_filter: str = None, limit: int = 3,
+                 visibilities: tuple = ('all',)) -> list[dict]:
     """
     Búsqueda FTS en español usando OR entre términos (ver _build_or_query),
     opcionalmente restringida a un source ILIKE.
+
+    visibilities: qué filas de knowledge_chunks pueden verse. Por defecto
+    SOLO ('all',) — el comportamiento de siempre para cualquier usuario,
+    ya que todo el conocimiento ingerido nace con visibility='all'. La
+    búsqueda del creator pasa ('creator', 'all') explícitamente para
+    incluir también el conocimiento derivado de conversación aún no
+    promovido a público (ver search_knowledge_creator).
     """
     if limit <= 0:
         return []
@@ -94,11 +102,12 @@ def _fts_search(terms: list[str], source_filter: str = None, limit: int = 3) -> 
                                websearch_to_tsquery('spanish', %s)) AS rank
                 FROM knowledge_chunks
                 WHERE source ILIKE %s
+                  AND visibility = ANY(%s)
                   AND to_tsvector('spanish', content) @@ websearch_to_tsquery('spanish', %s)
                 ORDER BY rank DESC
                 LIMIT %s
                 """,
-                (or_query, f"%{source_filter}%", or_query, limit)
+                (or_query, f"%{source_filter}%", list(visibilities), or_query, limit)
             )
         else:
             rows = db_all(
@@ -107,11 +116,12 @@ def _fts_search(terms: list[str], source_filter: str = None, limit: int = 3) -> 
                        ts_rank(to_tsvector('spanish', content),
                                websearch_to_tsquery('spanish', %s)) AS rank
                 FROM knowledge_chunks
-                WHERE to_tsvector('spanish', content) @@ websearch_to_tsquery('spanish', %s)
+                WHERE visibility = ANY(%s)
+                  AND to_tsvector('spanish', content) @@ websearch_to_tsquery('spanish', %s)
                 ORDER BY rank DESC
                 LIMIT %s
                 """,
-                (or_query, or_query, limit)
+                (or_query, list(visibilities), or_query, limit)
             )
         return rows or []
     except Exception as e:
@@ -119,8 +129,10 @@ def _fts_search(terms: list[str], source_filter: str = None, limit: int = 3) -> 
         return []
 
 
-def _ilike_fallback(keyword: str, source_filter: str = None, limit: int = 2) -> list[dict]:
-    """Fallback simple si el FTS no encuentra nada."""
+def _ilike_fallback(keyword: str, source_filter: str = None, limit: int = 2,
+                     visibilities: tuple = ('all',)) -> list[dict]:
+    """Fallback simple si el FTS no encuentra nada. Mismo filtro de
+    visibilidad que _fts_search, con idéntico default seguro."""
     if limit <= 0:
         return []
     try:
@@ -130,9 +142,10 @@ def _ilike_fallback(keyword: str, source_filter: str = None, limit: int = 2) -> 
                 SELECT content, source, category, 0.1 AS rank
                 FROM knowledge_chunks
                 WHERE source ILIKE %s AND content ILIKE %s
+                  AND visibility = ANY(%s)
                 LIMIT %s
                 """,
-                (f"%{source_filter}%", f"%{keyword}%", limit)
+                (f"%{source_filter}%", f"%{keyword}%", list(visibilities), limit)
             )
         else:
             rows = db_all(
@@ -140,9 +153,10 @@ def _ilike_fallback(keyword: str, source_filter: str = None, limit: int = 2) -> 
                 SELECT content, source, category, 0.1 AS rank
                 FROM knowledge_chunks
                 WHERE content ILIKE %s
+                  AND visibility = ANY(%s)
                 LIMIT %s
                 """,
-                (f"%{keyword}%", limit)
+                (f"%{keyword}%", list(visibilities), limit)
             )
         return rows or []
     except Exception as e:
@@ -298,12 +312,34 @@ def search_audio_chunks(message: str, user_id: str, top_k: int = 3) -> list[dict
     return rows or []
 
 
+def _search_conversation_knowledge(message: str, top_k: int = 3) -> list[dict]:
+    """
+    Busca en el conocimiento derivado de conversaciones vivas con el
+    creator (categorías 'Enciclopedia de la Biología' y 'Astrología',
+    clasificadas automáticamente por classification.py) — incluye tanto
+    lo aún privado (visibility='creator') como lo ya promovido ('all'),
+    porque esta función solo se llama desde la ruta del creator.
+    """
+    terms = _extract_search_terms(message)
+    if not terms:
+        return []
+    chunks = _fts_search(
+        terms, source_filter='Conversación viva', limit=top_k,
+        visibilities=('creator', 'all'),
+    )
+    if chunks:
+        logger.info(f"[knowledge] Conocimiento de conversación: {len(chunks)} chunks")
+    return chunks
+
+
 def search_knowledge_creator(message: str, user_id: str):
     """
     Versión extendida de search_knowledge para el creator:
       1. Todo lo que hace search_knowledge (Mónica + routing + web fallback)
       2. Además busca en audio_chunks del creator con timestamp
-      3. Incluye acceso al ADN como documento consultable
+      3. Además busca en el conocimiento derivado de conversación (Enciclopedia
+         viva / Astrología viva) aún no promovido a público
+      4. Incluye acceso al ADN como documento consultable
 
     La instrucción al LLM en chat.py ya contempla que el creator puede pedir
     citas literales de cualquier documento incluyendo el ADN.
@@ -314,6 +350,11 @@ def search_knowledge_creator(message: str, user_id: str):
     audio_chunks = search_audio_chunks(message, user_id, top_k=3)
     if audio_chunks:
         chunks = chunks + audio_chunks
+
+    # Buscar en conocimiento derivado de conversación (creator + ya promovido)
+    conv_chunks = _search_conversation_knowledge(message, top_k=3)
+    if conv_chunks:
+        chunks = chunks + conv_chunks
 
     return chunks, web_context
 

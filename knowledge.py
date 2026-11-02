@@ -40,6 +40,22 @@ TOP_K_TOTAL = 6               # tope de chunks totales inyectados en el contexto
 _MIN_TERM_LEN = 3
 
 
+_TILDES = str.maketrans({c: '_' for c in 'áéíóúüñÁÉÍÓÚÜÑ'})
+
+
+def patron_fuente(texto: str) -> str:
+    """
+    Patrón ILIKE para buscar una fuente por nombre IGNORANDO tildes y ñ.
+
+    ILIKE distingue "ó" de "o", y varias fuentes están guardadas sin tilde
+    (p.ej. "Diccionario-de-Biodescodificacion"): el router buscaba
+    "Biodescodificación" y no encontraba ni uno de sus ~1.800 chunks. Cada
+    carácter acentuado pasa a '_' (un carácter cualquiera), que casa con la
+    versión con y sin tilde sin necesitar la extensión unaccent de Postgres.
+    """
+    return f"%{texto.translate(_TILDES)}%"
+
+
 def _extract_search_terms(text: str) -> list[str]:
     """
     Extrae términos de búsqueda significativos de un texto libre (una
@@ -107,7 +123,7 @@ def _fts_search(terms: list[str], source_filter: str = None, limit: int = 3,
                 ORDER BY rank DESC
                 LIMIT %s
                 """,
-                (or_query, f"%{source_filter}%", list(visibilities), or_query, limit)
+                (or_query, patron_fuente(source_filter), list(visibilities), or_query, limit)
             )
         else:
             rows = db_all(
@@ -145,7 +161,7 @@ def _ilike_fallback(keyword: str, source_filter: str = None, limit: int = 2,
                   AND visibility = ANY(%s)
                 LIMIT %s
                 """,
-                (f"%{source_filter}%", f"%{keyword}%", list(visibilities), limit)
+                (patron_fuente(source_filter), f"%{keyword}%", list(visibilities), limit)
             )
         else:
             rows = db_all(
@@ -196,13 +212,18 @@ def _search_routed_documents(message: str, documents: list, keywords: list) -> l
 
     terms = keywords if keywords else _extract_search_terms(message)
     chunks = []
+    vistos = set()  # varias claves del catálogo pueden casar con el mismo documento
 
     for doc_key in documents:
         found = _fts_search(terms, source_filter=doc_key, limit=TOP_K_POR_DOCUMENTO)
         if not found:
             palabra = terms[0] if terms else doc_key
             found = _ilike_fallback(palabra, source_filter=doc_key, limit=TOP_K_POR_DOCUMENTO)
-        chunks.extend(found)
+        for c in found:
+            huella = (c.get("source"), c.get("content"))
+            if huella not in vistos:
+                vistos.add(huella)
+                chunks.append(c)
 
     if chunks:
         logger.info(f"[knowledge] Documentos enrutados {documents}: {len(chunks)} chunks")

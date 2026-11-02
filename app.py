@@ -71,14 +71,20 @@ def health_schema():
     # devuelve nada. Informativo: no afecta a 'ok'.
     if checks.get('knowledge_chunks.visibility'):
         from query_router import DOCUMENT_CATALOG
+        from knowledge import patron_fuente
         fuentes = db_all(
             "SELECT source, COUNT(*) AS n FROM knowledge_chunks "
             "WHERE visibility = 'all' GROUP BY source"
         )
-        catalogo = {
-            clave: sum(f['n'] for f in fuentes if clave.lower() in (f['source'] or '').lower())
-            for clave in DOCUMENT_CATALOG
-        }
+        # Mismo patrón que usa knowledge.py en producción (ignora tildes)
+        catalogo = {}
+        for clave in DOCUMENT_CATALOG:
+            fila = db_all(
+                "SELECT COUNT(*) AS n FROM knowledge_chunks "
+                "WHERE visibility = 'all' AND source ILIKE %s",
+                (patron_fuente(clave),)
+            )
+            catalogo[clave] = int(fila[0]['n']) if fila else 0
         resp['router_catalogo'] = catalogo
         resp['router_sin_contenido'] = [c for c, n in catalogo.items() if n == 0]
         resp['fuentes_publicas'] = {f['source']: f['n'] for f in fuentes}

@@ -179,17 +179,54 @@ def test_health_schema_detecta_lo_que_falta(client, monkeypatch):
     def con_todo(q, p=()):
         if "information_schema" in q:
             return todo
-        return [{"source": "Mónica Martos/x.txt", "n": 3}]
+        if "GROUP BY source" in q:
+            return [{"source": "Kybalion (Fundamentos)", "n": 3}]
+        # conteo por clave del catálogo: solo "Kybalion" tiene contenido
+        return [{"n": 3 if "Kybalion" in p[0] else 0}]
 
     monkeypatch.setattr(db, "db_all", con_todo)
     d = client.get("/health/schema").get_json()
     assert d["ok"] is True
-    assert d["router_catalogo"]["Adrián Lozano"] == 0     # no hay fuente con ese nombre
+    assert d["router_catalogo"]["Kybalion"] == 3
     assert "Adrián Lozano" in d["router_sin_contenido"]
+    assert "Kybalion" not in d["router_sin_contenido"]
 
     monkeypatch.setattr(db, "db_all", lambda q, p=(): [{"table_name": "messages", "column_name": "sources"}])
     d = client.get("/health/schema").get_json()
     assert d["ok"] is False and d["checks"]["knowledge_chunks.visibility"] is False
+
+
+# ── knowledge.py: búsqueda por documento ─────────────────────────────────────
+
+def _ilike_a_regex(patron):
+    """Equivalente Python de un patrón ILIKE (% = .*, _ = un carácter), sin distinguir mayúsculas."""
+    import re
+    return re.compile("^" + "".join(
+        ".*" if c == "%" else "." if c == "_" else re.escape(c) for c in patron) + "$", re.I | re.S)
+
+
+@pytest.mark.parametrize("clave", ["Biodescodificación", "Bioneuroemoción"])
+def test_el_router_encuentra_documentos_guardados_sin_tilde(clave):
+    from knowledge import patron_fuente
+    rx = _ilike_a_regex(patron_fuente(clave))
+    # fuentes reales de producción: sin tilde en el nombre del archivo y en la carpeta
+    assert rx.match("Diccionario-de-Biodescodificacion (1) (Biodescodificacion-Bioneuroemocion)")
+    assert rx.match("Bioneuroemocion-Un-metodo-Enric-Corbera (Biodescodificacion-Bioneuroemocion)")
+    # y siguen casando las que sí llevan tilde
+    assert rx.match("Algo (Biodescodificación-Bioneuroemoción)")
+
+
+def test_patron_fuente_no_casa_con_documentos_distintos():
+    from knowledge import patron_fuente
+    assert not _ilike_a_regex(patron_fuente("Biodescodificación")).match("Un curso de milagros")
+
+
+def test_documentos_enrutados_no_repiten_chunks(monkeypatch):
+    import knowledge
+    mismo = {"source": "Dic (Bio)", "content": "texto", "category": "x", "rank": 1}
+    monkeypatch.setattr(knowledge, "_fts_search", lambda *a, **k: [dict(mismo)])
+    r = knowledge._search_routed_documents("dolor", ["Biodescodificación", "Bioneuroemoción"], ["dolor"])
+    assert len(r) == 1
 
 
 # ── db.py: pool de conexiones ────────────────────────────────────────────────

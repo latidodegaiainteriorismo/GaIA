@@ -295,6 +295,12 @@ def upload_audio():
     audio_bytes = file.read()
     file_size  = len(audio_bytes)
 
+    # target: 'conversational' (por defecto, memoria privada del creator) o
+    # 'knowledge' (se archiva directo como base de conocimiento general, sin
+    # generar respuesta de chat — pensado para audios históricos).
+    target     = request.form.get('target', 'conversational')
+    visibility = 'all' if target == 'knowledge' else 'creator'
+
     # Validación de tamaño (Groq Whisper: máx 25MB)
     max_bytes = 25 * 1024 * 1024
     if file_size > max_bytes:
@@ -340,11 +346,11 @@ def upload_audio():
         INSERT INTO audio_files
             (user_id, filename, storage_path, duration_seconds,
              transcript_full, title, file_size_bytes, visibility)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, 'creator')
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
         (user_id, filename, storage_path, duration,
-         transcript_full, title, file_size)
+         transcript_full, title, file_size, visibility)
     )
     if not audio_row:
         _delete_from_storage(storage_path)
@@ -371,11 +377,11 @@ def upload_audio():
             INSERT INTO audio_chunks
                 (audio_file_id, chunk_index, content, start_time, end_time,
                  embedding, visibility)
-            VALUES (%s, %s, %s, %s, %s, %s, 'creator')
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             """,
             (audio_file_id, i, chunk['content'],
              chunk['start_time'], chunk['end_time'],
-             embedding_lit)
+             embedding_lit, visibility)
         )
         if ok:
             chunks_ok += 1
@@ -391,6 +397,7 @@ def upload_audio():
         'filename':        filename,
         'duration':        duration,
         'chunks':          chunks_ok,
+        'visibility':      visibility,
         'transcript_preview': transcript_full[:300] + ('...' if len(transcript_full) > 300 else ''),
         # CORRECCIÓN (25-ago-2026): se añade el transcript COMPLETO (no solo
         # el preview recortado) para que el frontend pueda usarlo como

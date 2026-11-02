@@ -60,6 +60,9 @@ DATABASE_URL = os.environ.get('DATABASE_URL', '')
 # ── AUTH ──────────────────────────────────────────────────────────────────────
 GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID', '')
 
+# ── GEOCODING (astrología: lugar de nacimiento → lat/lon/timezone) ────────────
+LOCATIONIQ_API_KEY = os.environ.get('LOCATIONIQ_API_KEY', '')
+
 # Email del desarrollador — GaIA lo reconoce automáticamente y habilita
 # comandos especiales (editar su propio ADN, ver prompts/dev_commands.py)
 DEVELOPER_EMAIL = 'adrian.lozano.roca@gmail.com'

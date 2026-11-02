@@ -6,15 +6,15 @@ Usa LocationIQ (gratis, requiere API key, funciona bien desde servidores en la n
 Usa timezonefinder para resolver zona horaria offline.
 """
 
-import os
 import logging
 import requests
 from timezonefinder import TimezoneFinder
+from config import LOCATIONIQ_API_KEY
 
 logger = logging.getLogger(__name__)
 
 _LOCATIONIQ_URL = "https://us1.locationiq.com/v1/search"
-_LOCATIONIQ_KEY = os.environ.get("LOCATIONIQ_API_KEY", "")
+_LOCATIONIQ_KEY = LOCATIONIQ_API_KEY
 
 _tf = None
 

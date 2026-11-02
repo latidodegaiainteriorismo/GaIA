@@ -4,6 +4,7 @@ import logging
 from io import BytesIO
 from flask import Blueprint, request, jsonify
 from db import db_run
+from auth import require_creator
 
 logger    = logging.getLogger(__name__)
 ingest_bp = Blueprint('ingest', __name__)
@@ -34,6 +35,7 @@ def get_embedding(text: str) -> list[float] | None:
 
 # ── Diagnóstico: qué modelos están disponibles ────────────────────────────────
 @ingest_bp.route('/ingest/models', methods=['GET'])
+@require_creator
 def list_models():
     try:
         from fastembed import TextEmbedding
@@ -88,6 +90,7 @@ def extract_youtube(url: str) -> str:
 
 # ── Endpoint /ingest ───────────────────────────────────────────────────────────
 @ingest_bp.route('/ingest', methods=['POST'])
+@require_creator
 def ingest():
     data = request.get_json() or {}
 

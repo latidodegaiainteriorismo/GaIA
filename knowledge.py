@@ -32,7 +32,10 @@ logger = logging.getLogger(__name__)
 MIN_CHUNKS_ANTES_DE_WEB = 2   # si hay menos que esto, probamos la web también
 TOP_K_MONICA = 3              # chunks garantizados de Mónica / Enciclopedia
 TOP_K_POR_DOCUMENTO = 2       # chunks por cada documento adicional enrutado
-TOP_K_TOTAL = 6               # tope de chunks totales inyectados en el contexto
+# Fuentes grandes y muy prácticas (miles de fragmentos de lectura de carta):
+# 2 fragmentos se quedan cortos para interpretar un planeta en una casa.
+TOP_K_POR_DOCUMENTO_AMPLIO = {'José Millán': 4}
+TOP_K_TOTAL = 8               # tope de chunks totales inyectados en el contexto
 
 # Palabras demasiado cortas/genéricas no aportan nada a una búsqueda OR y
 # solo añaden ruido (o, en algunos casos, provocan errores de sintaxis en
@@ -203,9 +206,11 @@ def _search_monica(message: str) -> list[dict]:
     return chunks
 
 
-def _search_routed_documents(message: str, documents: list, keywords: list) -> list[dict]:
+def _search_routed_documents(message: str, documents: list, keywords: list,
+                             visibilities: tuple = ('all',)) -> list[dict]:
     """
     Paso 2 — busca en los documentos que Groq consideró relevantes.
+    visibilities: ('all',) para cualquier usuario; el creator añade 'creator'.
     """
     if not documents:
         return []
@@ -215,10 +220,12 @@ def _search_routed_documents(message: str, documents: list, keywords: list) -> l
     vistos = set()  # varias claves del catálogo pueden casar con el mismo documento
 
     for doc_key in documents:
-        found = _fts_search(terms, source_filter=doc_key, limit=TOP_K_POR_DOCUMENTO)
+        limite = TOP_K_POR_DOCUMENTO_AMPLIO.get(doc_key, TOP_K_POR_DOCUMENTO)
+        found = _fts_search(terms, source_filter=doc_key, limit=limite, visibilities=visibilities)
         if not found:
             palabra = terms[0] if terms else doc_key
-            found = _ilike_fallback(palabra, source_filter=doc_key, limit=TOP_K_POR_DOCUMENTO)
+            found = _ilike_fallback(palabra, source_filter=doc_key, limit=limite,
+                                    visibilities=visibilities)
         for c in found:
             huella = (c.get("source"), c.get("content"))
             if huella not in vistos:
@@ -230,10 +237,13 @@ def _search_routed_documents(message: str, documents: list, keywords: list) -> l
     return chunks
 
 
-def search_knowledge(message: str, top_k: int = TOP_K_TOTAL):
+def search_knowledge(message: str, top_k: int = TOP_K_TOTAL,
+                     visibilities: tuple = ('all',)):
     """
     Orquesta los 3 pasos del RAG v6.1.
     Devuelve (chunks, web_context) — web_context ya viene formateado si se usó.
+    visibilities: los documentos privados (p.ej. transcripciones de YouTube de
+    terceros) solo los ve el creator, que pasa ('creator', 'all').
     """
     # Paso 1 — Mónica Martos, incondicional
     chunks = _search_monica(message)
@@ -243,7 +253,8 @@ def search_knowledge(message: str, top_k: int = TOP_K_TOTAL):
     routed_chunks = _search_routed_documents(
         message,
         route_info.get("documents", []),
-        route_info.get("keywords", [])
+        route_info.get("keywords", []),
+        visibilities=visibilities,
     )
     chunks.extend(routed_chunks)
 
@@ -365,7 +376,7 @@ def search_knowledge_creator(message: str, user_id: str):
     La instrucción al LLM en chat.py ya contempla que el creator puede pedir
     citas literales de cualquier documento incluyendo el ADN.
     """
-    chunks, web_context = search_knowledge(message)
+    chunks, web_context = search_knowledge(message, visibilities=('creator', 'all'))
 
     # Buscar en audio_chunks del creator
     audio_chunks = search_audio_chunks(message, user_id, top_k=3)

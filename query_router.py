@@ -78,6 +78,16 @@ DOCUMENT_CATALOG = {
         "Energías telúricas del terreno, redes Hartmann y Curry, geopatías, "
         "impacto del entorno físico y geológico en la salud."
     ),
+    "José Millán": (  # transcripciones de su canal de YouTube (privadas: solo creator)
+        "Astrología humanística PRÁCTICA, para interpretar una carta natal: significado "
+        "de cada planeta en cada signo y en cada casa (Sol, Luna, Mercurio, Venus, Marte, "
+        "Júpiter, Saturno, Urano, Neptuno, Plutón, Quirón, nodos), aspectos entre planetas "
+        "(conjunción, oposición, cuadratura, trígono, sextil), elementos y cualidades "
+        "(fuego, tierra, aire, agua; cardinal, fijo, mutable), configuraciones (yod, gran "
+        "cruz, T cuadrada, stellium), ascendente, tránsitos y progresiones sobre la carta, "
+        "retorno solar, retornos de Saturno, sinastría y carta compuesta. Úsalo para "
+        "CUALQUIER pregunta de interpretación astrológica."
+    ),
     "Astrología Occidental": (
         "Signos zodiacales, casas astrológicas, planetas, tránsitos, carta natal, "
         "tradición astrológica occidental/tropical."

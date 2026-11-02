@@ -29,7 +29,9 @@ GaIA es una app de compañía espiritual con IA, co-creada por Adrián (arquitec
 
 ## Cuidado con esto (bugs ya resueltos, no reintroducir)
 - `_get_conv_messages`: el orden correcto es `DESC LIMIT 30` con reversión en Python — no cambiar a `ASC` directamente.
-- Presupuesto de contexto adaptativo: `_MAX_CONTEXT_TOKENS = 2600`; el orden de descarte prioriza truncar `cross_memory` en último lugar.
+- Presupuesto de contexto adaptativo: `_MAX_CONTEXT_TOKENS = 20000` (subido desde 2600 tras migrar a Gemini); el orden de descarte prioriza truncar `cross_memory` en último lugar.
+- `routes/chat.py` NO debe sustituirse por una versión antigua: la correcta usa `_ajustar_a_presupuesto`, modo creator (`search_knowledge_creator`), síntesis viva (`format_synthesis_context`), memoria profunda (`search_user_memory`) y guarda `sources`, además de las rutas `/messages` y `/tts`. El 28-ago-2026 se subió desde la web una versión vieja (ASC LIMIT 50, sin memoria ni modo creator) y GaIA estuvo dos meses sin ver los mensajes recientes de conversaciones largas.
+- Esquema: `GET /health/schema` dice si existen las columnas/tablas que el código necesita (las migraciones se hicieron a mano en Supabase y un fallo ahí es silencioso).
 - Colisión de modelos en el tier gratuito de Groq — ya resuelta, revisar antes de tocar la cadena de fallback de modelos.
 - Rutas de blueprint: verificar SIEMPRE que una ruta nueva esté en el archivo donde se define su blueprint (ej. `/tts` debe estar en `chat.py`, no en `tts.py`, porque `chat_bp` se define en `chat.py`).
 

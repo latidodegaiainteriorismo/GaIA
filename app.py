@@ -35,6 +35,35 @@ app.register_blueprint(learnings_bp)
 @app.route('/health', methods=['GET'])
 def health():
     return jsonify({'status': 'GaIA está viva', 'time': datetime.utcnow().isoformat()})
+
+# Columnas/tablas que el código da por existentes. Las migraciones se han
+# hecho a mano en Supabase, y si falta algo db_all/db_run fallan en silencio
+# (devuelven []/False) — p.ej. sin knowledge_chunks.visibility TODA búsqueda
+# de conocimiento sale vacía. Solo devuelve sí/no, ningún dato.
+_SCHEMA_REQUERIDO = {
+    'knowledge_chunks.visibility':                         ('knowledge_chunks', 'visibility'),
+    'knowledge_chunks.created_at':                         ('knowledge_chunks', 'created_at'),
+    'messages.sources':                                    ('messages', 'sources'),
+    'messages.embedding':                                  ('messages', 'embedding'),
+    'user_synthesis.synthesis_text':                       ('user_synthesis', 'synthesis_text'),
+    'basal_notes.active':                                  ('basal_notes', 'active'),
+    'conversation_classification_state.last_classified_message_id':
+        ('conversation_classification_state', 'last_classified_message_id'),
+    'audio_files.visibility':                              ('audio_files', 'visibility'),
+    'audio_chunks.visibility':                             ('audio_chunks', 'visibility'),
+}
+
+@app.route('/health/schema', methods=['GET'])
+def health_schema():
+    from db import db_all
+    rows = db_all(
+        "SELECT table_name, column_name FROM information_schema.columns "
+        "WHERE table_schema = 'public'"
+    )
+    existentes = {(r['table_name'], r['column_name']) for r in rows}
+    checks = {nombre: par in existentes for nombre, par in _SCHEMA_REQUERIDO.items()}
+    return jsonify({'db_reachable': bool(rows), 'ok': bool(rows) and all(checks.values()),
+                    'checks': checks})
 # ── ENTRY POINT ───────────────────────────────────────────────────────────────
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))

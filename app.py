@@ -62,8 +62,27 @@ def health_schema():
     )
     existentes = {(r['table_name'], r['column_name']) for r in rows}
     checks = {nombre: par in existentes for nombre, par in _SCHEMA_REQUERIDO.items()}
-    return jsonify({'db_reachable': bool(rows), 'ok': bool(rows) and all(checks.values()),
-                    'checks': checks})
+    resp = {'db_reachable': bool(rows), 'ok': bool(rows) and all(checks.values()),
+            'checks': checks}
+
+    # Contenido: el router (query_router.py) elige documentos del catálogo y
+    # knowledge.py los busca con `source ILIKE %clave%`. Si una clave no casa
+    # con ningún chunk público, el router "elige" un documento que nunca
+    # devuelve nada. Informativo: no afecta a 'ok'.
+    if checks.get('knowledge_chunks.visibility'):
+        from query_router import DOCUMENT_CATALOG
+        fuentes = db_all(
+            "SELECT source, COUNT(*) AS n FROM knowledge_chunks "
+            "WHERE visibility = 'all' GROUP BY source"
+        )
+        catalogo = {
+            clave: sum(f['n'] for f in fuentes if clave.lower() in (f['source'] or '').lower())
+            for clave in DOCUMENT_CATALOG
+        }
+        resp['router_catalogo'] = catalogo
+        resp['router_sin_contenido'] = [c for c, n in catalogo.items() if n == 0]
+        resp['fuentes_publicas'] = {f['source']: f['n'] for f in fuentes}
+    return jsonify(resp)
 # ── ENTRY POINT ───────────────────────────────────────────────────────────────
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))

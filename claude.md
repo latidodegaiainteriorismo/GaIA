@@ -12,7 +12,10 @@ GaIA es una app de compañía espiritual con IA, co-creada por Adrián (arquitec
 - Frontend desplegado en Vercel: https://ga-ia-frontend.vercel.app
 - Cuenta principal `latidodegaiainteriorismo@gmail.com` cubre GitHub, Render, Vercel, Supabase, ElevenLabs, HuggingFace
 - Flujo de despliegue: commit directo a `main` → auto-deploy en Render. **No hay entorno de staging** — cualquier cambio probado en local antes de hacer push.
-- Servidor Flask con **1 worker gunicorn** en plan Free de Render — cuidado con timeouts (ya hubo un incidente de `CRITICAL WORKER TIMEOUT` en TTS por exceder el timeout de 30s por defecto; el fix fue `--timeout 120` en el comando de arranque).
+- Servidor Flask con **1 worker gunicorn y 3 hilos** (`Procfile`) en plan Free de Render (512 MB): así una respuesta larga (LLM + voz) o la pasada de `/maintenance/consolidate` (UptimeRobot, cada pocos minutos) no bloquean a los demás. `--timeout 120` evita el `CRITICAL WORKER TIMEOUT` ya sufrido en TTS. Si Render empieza a matar el worker por memoria (OOM), bajar `--threads` a 1.
+- `db.py` usa un **pool de conexiones** (psycopg2 `ThreadedConnectionPool`, máx. 8): reutiliza conexiones, descarta las que Supabase cierra por inactividad y reintenta una vez. Las lecturas (`db_all`) van en autocommit y **nunca deben usarse para escribir**.
+- **Pruebas**: `pip install -r requirements.txt pytest && python -m pytest tests` (sin BD ni red). GitHub Actions las ejecuta en cada push (`.github/workflows/tests.yml`); si salen en rojo, no te fíes del despliegue. Al editar desde la web de GitHub, mira que el check quede en verde.
+- El SQL de las tablas de clasificación está en `sql/classification_setup.sql`. Las demás tablas se crearon a mano en Supabase sin migración versionada.
 
 ## Arquitectura del backend
 - **LLM principal**: Gemini Flash-Lite vía endpoint OpenAI-compatible de Google (migrado desde Groq). Groq se mantiene para transcripción Whisper y fallback de emergencia.

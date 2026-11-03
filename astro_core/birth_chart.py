@@ -35,8 +35,21 @@ def _ecliptic_longitude(eph, body_key, t, observer=None):
     else:
         pos = earth.at(t).observe(body).apparent()
 
-    lat, lon, _ = pos.ecliptic_latlon()
+    # epoch='date': zodiaco tropical, anclado al equinoccio de la fecha. Sin esto
+    # Skyfield mide contra la eclíptica del año 2000 y todo sale ~0,36° bajo en 2026
+    # (precesión), además de desalineado con el Ascendente y el Medio Cielo.
+    lat, lon, _ = pos.ecliptic_latlon(epoch='date')
     return lon.degrees % 360
+
+
+def _is_retrograde(eph, body_key, t, name: str) -> bool:
+    """Retrógrado si la longitud disminuye a lo largo de un día alrededor de t."""
+    if name in ("sun", "moon"):
+        return False
+    ts = get_timescale()
+    antes = _ecliptic_longitude(eph, body_key, ts.tt_jd(t.tt - 0.5))
+    despues = _ecliptic_longitude(eph, body_key, ts.tt_jd(t.tt + 0.5))
+    return bool(((despues - antes + 180) % 360) - 180 < 0)
 
 
 def calculate_planet_positions(birth_datetime: datetime, latitude: float, longitude: float,
@@ -58,17 +71,19 @@ def calculate_planet_positions(birth_datetime: datetime, latitude: float, longit
         birth_datetime = birth_datetime.replace(tzinfo=timezone.utc)
 
     t = ts.from_datetime(birth_datetime)
-    observer_topo = wgs84.latlon(latitude, longitude)
 
     positions = []
     for name, key in PLANET_KEYS.items():
-        lon_deg = _ecliptic_longitude(eph, key, t, observer=observer_topo)
+        # Geocéntrico (desde el centro de la Tierra), como las efemérides astrológicas.
+        # Con observador en la superficie la Luna se desplaza hasta ~1° por paralaje.
+        lon_deg = _ecliptic_longitude(eph, key, t)
         sign_data = longitude_to_sign(lon_deg)
         positions.append(PlanetPosition(
             name=name,
             longitude=lon_deg,
             sign=sign_data["sign"],
             degree_in_sign=sign_data["degree"],
+            is_retrograde=_is_retrograde(eph, key, t, name),
         ))
 
     if include_extra_bodies:
@@ -79,6 +94,7 @@ def calculate_planet_positions(birth_datetime: datetime, latitude: float, longit
                 longitude=body_data["longitude"],
                 sign=body_data["sign"],
                 degree_in_sign=body_data["degree_in_sign"],
+                is_retrograde=body_data.get("is_retrograde", False),
             ))
 
     return positions

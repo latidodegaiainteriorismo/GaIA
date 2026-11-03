@@ -21,6 +21,8 @@ PESO_NATAL = {
     "sun": 10, "moon": 10, "mercury": 7, "venus": 7, "mars": 7,
     "jupiter": 5, "saturn": 5, "uranus": 3, "neptune": 3, "pluto": 3,
     "chiron": 3, "north_node": 3, "south_node": 3, "lilith": 2,
+    # Ángulos: puntos muy sensibles (Ascendente y Medio Cielo, a la altura de los personales)
+    "ascendant": 9, "midheaven": 9, "descendant": 6, "imum_coeli": 6,
 }
 
 PESO_ASPECTO = {

@@ -28,6 +28,7 @@ from astro_core.transits import get_current_transits_report, get_transits_report
 from astro_core.models import BirthChart, PlanetPosition, HouseCusp, Aspect
 from astro_core.chart_svg import render_birth_chart_svg, render_transit_chart_svg
 from astro_core.generalidades import calculate_generalidades
+from astro_core.angulos import puntos_angulares, aspectos_a_angulos
 
 logger = logging.getLogger(__name__)
 
@@ -38,11 +39,14 @@ DEFAULT_PERSON_LABEL = "yo"
 
 def create_birth_chart_for_user(user_id: str, birth_date: str, birth_time: str,
                                  birth_place: str, person_label: str = DEFAULT_PERSON_LABEL,
-                                 relationship: str = None) -> dict | None:
+                                 relationship: str = None, time_known: bool = True) -> dict | None:
     """
     Calcula y guarda una carta natal para el usuario. Un usuario puede tener
     varias cartas guardadas (la suya propia y la de otras personas), cada
     una distinguida por person_label.
+
+    time_known=False: no se sabe la hora (birth_time es solo un valor de relleno).
+    La carta se guarda marcada así y no se usan Ascendente, Medio Cielo ni casas.
     """
     geo = geocode_location(birth_place)
     if not geo:
@@ -63,6 +67,7 @@ def create_birth_chart_for_user(user_id: str, birth_date: str, birth_time: str,
         longitude=geo["longitude"],
         location_name=geo["display_name"],
     )
+    chart.time_known = time_known
     chart_dict = chart.to_dict()
 
     sun = chart.get_planet("sun")
@@ -90,7 +95,7 @@ def create_birth_chart_for_user(user_id: str, birth_date: str, birth_time: str,
             user_id, person_label, relationship, utc_dt, geo["latitude"], geo["longitude"], geo["display_name"],
             sun.sign if sun else None,
             moon.sign if moon else None,
-            chart_dict["ascendant"]["sign"] if chart_dict["ascendant"] else None,
+            chart_dict["ascendant"]["sign"] if time_known and chart_dict["ascendant"] else None,
             json.dumps(chart_dict),
         )
     )
@@ -176,6 +181,7 @@ def _dict_to_birth_chart(chart_dict: dict) -> BirthChart:
         aspects=aspects,
         ascendant=chart_dict["ascendant"]["absolute_longitude"] if chart_dict.get("ascendant") else None,
         midheaven=chart_dict["midheaven"]["absolute_longitude"] if chart_dict.get("midheaven") else None,
+        time_known=chart_dict.get("time_known", True),
     )
 
 
@@ -253,6 +259,8 @@ _PLANET_ES = {
     "uranus": "Urano", "neptune": "Neptuno", "pluto": "Plutón",
     "north_node": "Nodo Norte", "south_node": "Nodo Sur",
     "lilith": "Lilith", "chiron": "Quirón",
+    "ascendant": "Ascendente", "descendant": "Descendente",
+    "midheaven": "Medio Cielo", "imum_coeli": "Fondo del Cielo",
 }
 
 
@@ -315,17 +323,30 @@ _METODO_DE_LECTURA = (
     "respóndelo, pero di que es breve y dónde encaja dentro del telón de fondo.\n"
     "- Si no hay tránsitos lentos activos sobre puntos personales, dilo claramente en vez de "
     "inflar los rápidos.\n"
+    "- Los ángulos (Ascendente, Descendente, Medio Cielo y Fondo del Cielo) son puntos muy "
+    "sensibles: un planeta lento sobre uno de ellos es telón de fondo de primer orden. "
+    "℞ = retrógrado (lectura más interna, de revisión). La casa del tránsito («por tu casa N») "
+    "dice en qué área de la vida se vive el tema.\n"
+)
+
+_SIN_HORA = (
+    "⚠️ SIN HORA DE NACIMIENTO: no hay Ascendente, Medio Cielo ni casas fiables — no los "
+    "menciones ni los inventes. La Luna es aproximada (puede errar varios grados y hasta "
+    "cambiar de signo). Son fiables los planetas en signo y los aspectos entre planetas, "
+    "salvo los de la Luna. Si el usuario sabe la hora, anímale a dártela para completar la carta."
 )
 
 
 def _format_natal_aspects(aspects: list, maximo: int = 8) -> list:
-    """Líneas con los aspectos natales que más pesan (luminares y personales primero)."""
+    """Líneas con los aspectos natales que más pesan (luminares, ángulos y personales primero)."""
     from astro_core.birth_chart import MAJOR_ASPECTS
     from astro_core.relevancia import puntuar_aspecto_natal
     orbes = {nombre: orbe for nombre, _angulo, orbe in MAJOR_ASPECTS}
     puntuados = []
     for a in aspects:
-        orbe_max = orbes.get(a["aspect_type"], 8)
+        if "south_node" in (a["planet1"], a["planet2"]):
+            continue   # el Nodo Sur es el opuesto exacto del Norte: repetiría el mismo aspecto
+        orbe_max = a.get("orbe_max") or orbes.get(a["aspect_type"], 8)
         puntuados.append((puntuar_aspecto_natal(a["planet1"], a["planet2"], a["aspect_type"],
                                                 a["orb"], orbe_max), a))
     puntuados.sort(key=lambda x: (-x[0], x[1]["orb"]))
@@ -357,15 +378,30 @@ def format_astrology_context(user_id: str, target_date: str = None,
 
     lines = [f"## CARTA NATAL {subject} (datos reales, calculados con precisión astronómica)"]
 
+    time_known = chart_dict.get("time_known", True)
+    if not time_known:
+        lines.append(_SIN_HORA)
+
     for p in chart_dict["planets"]:
-        house_suffix = f", casa {p['house']}" if p.get("house") else ""
-        lines.append(f"- {_planet_es(p['name'])}: {p['sign']} {p['degree_in_sign']}°{house_suffix}")
+        house_suffix = f", casa {p['house']}" if time_known and p.get("house") else ""
+        retro = " ℞" if p.get("is_retrograde") else ""
+        lines.append(f"- {_planet_es(p['name'])}: {p['sign']} {p['degree_in_sign']}°{retro}{house_suffix}")
 
-    if chart_dict.get("ascendant"):
-        lines.append(f"- Ascendente: {chart_dict['ascendant']['sign']} "
-                     f"{chart_dict['ascendant']['degree']}°")
+    aspectos_natales = list(chart_dict.get("aspects") or [])
+    if time_known and chart_dict.get("ascendant") and chart_dict.get("midheaven"):
+        puntos = puntos_angulares(chart_dict["ascendant"]["absolute_longitude"],
+                                  chart_dict["midheaven"]["absolute_longitude"])
+        for pt in puntos:
+            lines.append(f"- {_planet_es(pt['name'])}: {pt['sign']} {pt['degree_in_sign']}° "
+                         f"(casa {pt['house']})")
+        for p in chart_dict["planets"]:
+            for asp in aspectos_a_angulos(p["longitude"], puntos):
+                aspectos_natales.append({
+                    "planet1": p["name"], "planet2": asp["point"]["name"],
+                    "aspect_type": asp["aspect_type"], "orb": asp["orb"], "orbe_max": asp["orb_max"],
+                })
 
-    natal_lines = _format_natal_aspects(chart_dict.get("aspects") or [])
+    natal_lines = _format_natal_aspects(aspectos_natales)
     if natal_lines:
         lines.append("\n## ASPECTOS NATALES PRINCIPALES (los que más pesan en la carta, de más a menos)")
         lines.extend(natal_lines)
@@ -382,10 +418,16 @@ def format_astrology_context(user_id: str, target_date: str = None,
             lines.append(f"### {_NIVELES_TRANSITO[nivel]}")
             for t in grupo:
                 tone = _ASPECT_TONE.get(t["aspect_type"], "")
+                casa_transito = (f", por {possessive} casa {t['transit_house']}"
+                                 if time_known and t.get("transit_house") else "")
+                casa_natal = (f", casa {t['natal_house']}"
+                              if time_known and t.get("natal_house") else "")
+                retro = " ℞" if t.get("transit_retrograde") else ""
                 lines.append(
-                    f"- {_planet_es(t['transit_planet'])} en tránsito ({t['transit_sign']}) "
-                    f"en {t['aspect_type']} con {possessive} {_planet_es(t['natal_planet'])} natal "
-                    f"({t['natal_sign']}, casa {t['natal_house']}) — orbe {t['orb']}°. {tone}."
+                    f"- {_planet_es(t['transit_planet'])} en tránsito ({t['transit_sign']}"
+                    f"{casa_transito}){retro} en {t['aspect_type']} con {possessive} "
+                    f"{_planet_es(t['natal_planet'])} natal ({t['natal_sign']}{casa_natal}) "
+                    f"— orbe {t['orb']}°. {tone}."
                 )
 
     lines.append(
@@ -548,6 +590,8 @@ def extract_new_chart_request(message: str) -> dict | None:
             "relationship": relationship,
             "birth_date": parsed["birth_date"],
             "birth_time": parsed.get("birth_time") or "12:00",
+            # Sin hora real no se inventa un Ascendente: la carta se guarda marcada.
+            "time_known": bool(parsed.get("birth_time")),
             "birth_place": parsed["birth_place"],
         }
     except Exception as e:

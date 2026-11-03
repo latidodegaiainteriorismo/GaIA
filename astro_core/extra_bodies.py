@@ -88,8 +88,15 @@ def calculate_chiron_longitude(t) -> float:
     chiron = sun + orbit
 
     astrometric = earth.at(t).observe(chiron).apparent()
-    _, lon, _ = astrometric.ecliptic_latlon()
+    _, lon, _ = astrometric.ecliptic_latlon(epoch='date')   # zodiaco tropical, igual que los planetas
     return lon.degrees % 360
+
+
+def _chiron_retrogrado(t) -> bool:
+    ts = get_timescale()
+    antes = calculate_chiron_longitude(ts.tt_jd(t.tt - 0.5))
+    despues = calculate_chiron_longitude(ts.tt_jd(t.tt + 0.5))
+    return bool(((despues - antes + 180) % 360) - 180 < 0)
 
 
 # ── Interfaz unificada ───────────────────────────────────────────────────
@@ -104,19 +111,20 @@ def calculate_extra_bodies(t) -> dict:
     lilith = calculate_lilith_mean(t)
     chiron = calculate_chiron_longitude(t)
 
-    def _entry(name, longitude):
+    def _entry(name, longitude, retrograde=False):
         sign_data = longitude_to_sign(longitude)
         return {
             "name": name,
             "longitude": longitude,
             "sign": sign_data["sign"],
             "degree_in_sign": sign_data["degree"],
-            "is_retrograde": False,  # no calculado para estos puntos (ver nota abajo)
+            # Nodos y Lilith son puntos medios: la retrogradación no aplica.
+            "is_retrograde": retrograde,
         }
 
     return {
         "north_node": _entry("north_node", node["north"]),
         "south_node": _entry("south_node", node["south"]),
         "lilith": _entry("lilith", lilith),
-        "chiron": _entry("chiron", chiron),
+        "chiron": _entry("chiron", chiron, _chiron_retrogrado(t)),
     }

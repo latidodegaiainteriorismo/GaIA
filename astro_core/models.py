@@ -93,6 +93,9 @@ class BirthChart:
     aspects: list[Aspect] = field(default_factory=list)
     ascendant: Optional[float] = None   # longitud eclíptica del Ascendente
     midheaven: Optional[float] = None   # longitud eclíptica del Medio Cielo (MC)
+    # False si no se conoce la hora de nacimiento: entonces Ascendente, Medio Cielo y
+    # casas no son fiables (y la Luna es aproximada).
+    time_known: bool = True
 
     def get_planet(self, name: str) -> Optional[PlanetPosition]:
         for p in self.planets:
@@ -113,4 +116,5 @@ class BirthChart:
             "aspects": [a.to_dict() for a in self.aspects],
             "ascendant": asc_data,
             "midheaven": mc_data,
+            "time_known": self.time_known,
         }

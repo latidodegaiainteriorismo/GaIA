@@ -388,6 +388,7 @@ def chat():
                 new_chart_request["birth_place"],
                 new_chart_request["person_label"],
                 new_chart_request["relationship"],
+                time_known=new_chart_request.get("time_known", True),
             )
             if created:
                 new_chart_suffix = (
@@ -395,6 +396,11 @@ def chat():
                     f"{new_chart_request['person_label']}. Confírmaselo al usuario con calidez, "
                     f"mencionando el Sol ({created['planets'][0]['sign']}) si aporta.\n"
                 )
+                if not new_chart_request.get("time_known", True):
+                    new_chart_suffix += (
+                        "No se indicó la hora de nacimiento: la carta se ha guardado SIN Ascendente "
+                        "ni casas (y con la Luna aproximada). Díselo y pídele la hora si la sabe.\n"
+                    )
             else:
                 new_chart_suffix = (
                     "\n## CARTA NUEVA — ERROR\nEl usuario pidió calcular una carta pero no se "

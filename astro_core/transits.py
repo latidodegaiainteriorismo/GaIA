@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from astro_core.birth_chart import calculate_planet_positions, MAJOR_ASPECTS
 from astro_core.models import BirthChart, PlanetPosition, Aspect
 from astro_core.relevancia import nivel_transito, puntuar_transito
+from astro_core.angulos import puntos_angulares, aspectos_a_angulos
 
 
 def get_planet_positions_at(target_datetime: datetime = None, latitude: float = 0.0, longitude: float = 0.0,
@@ -35,19 +36,55 @@ def get_current_planet_positions(latitude: float = 0.0, longitude: float = 0.0):
     return get_planet_positions_at(None, latitude, longitude)
 
 
-def calculate_transit_aspects(natal_chart: BirthChart, transit_planets: list[PlanetPosition] = None):
+def _casa_de_transito(natal_chart: BirthChart, longitud: float):
+    """Casa natal (casas enteras) por la que transita un punto, o None si no hay Ascendente fiable."""
+    if natal_chart.ascendant is None or not natal_chart.time_known:
+        return None
+    return ((int((longitud % 360) // 30) - int(natal_chart.ascendant // 30)) % 12) + 1
+
+
+def calculate_transit_aspects(natal_chart: BirthChart, transit_planets: list[PlanetPosition] = None,
+                              include_angles: bool = False):
     """
     Compara los planetas en tránsito contra los planetas natales, devolviendo
     los aspectos activos entre ambos conjuntos.
 
     Esto es distinto de calculate_aspects() en birth_chart.py, que compara
     planetas natales entre sí. Aquí comparamos tránsito -> natal.
+
+    include_angles añade los aspectos a Ascendente, Descendente, Medio Cielo y Fondo del
+    Cielo (solo si se conoce la hora de nacimiento). Va desactivado por defecto porque el
+    dibujo SVG de tránsitos solo sabe pintar planetas.
     """
     if transit_planets is None:
         transit_planets = get_planet_positions_at(None, natal_chart.latitude, natal_chart.longitude)
 
+    puntos = []
+    if include_angles and natal_chart.time_known and natal_chart.ascendant is not None \
+            and natal_chart.midheaven is not None:
+        puntos = puntos_angulares(natal_chart.ascendant, natal_chart.midheaven)
+
     transit_aspects = []
     for t_planet in transit_planets:
+        t_house = _casa_de_transito(natal_chart, t_planet.longitude)
+        for punto_aspecto in aspectos_a_angulos(t_planet.longitude, puntos, factor_orbe=0.6):
+            punto = punto_aspecto["point"]
+            transit_aspects.append({
+                "transit_planet": t_planet.name,
+                "transit_sign": t_planet.sign,
+                "transit_house": t_house,
+                "transit_retrograde": t_planet.is_retrograde,
+                "natal_planet": punto["name"],
+                "natal_sign": punto["sign"],
+                "natal_house": punto["house"],
+                "aspect_type": punto_aspecto["aspect_type"],
+                "orb": punto_aspecto["orb"],
+                "exact_angle": punto_aspecto["exact_angle"],
+                "nivel": nivel_transito(t_planet.name),
+                "relevancia": puntuar_transito(t_planet.name, punto["name"],
+                                               punto_aspecto["aspect_type"],
+                                               punto_aspecto["orb"], punto_aspecto["orb_max"]),
+            })
         for n_planet in natal_chart.planets:
             diff = abs(t_planet.longitude - n_planet.longitude)
             if diff > 180:
@@ -61,6 +98,8 @@ def calculate_transit_aspects(natal_chart: BirthChart, transit_planets: list[Pla
                     transit_aspects.append({
                         "transit_planet": t_planet.name,
                         "transit_sign": t_planet.sign,
+                        "transit_house": t_house,
+                        "transit_retrograde": t_planet.is_retrograde,
                         "natal_planet": n_planet.name,
                         "natal_sign": n_planet.sign,
                         "natal_house": n_planet.house,
@@ -85,7 +124,7 @@ def get_transits_report_for_date(natal_chart: BirthChart, target_datetime: datet
         target_datetime: fecha/hora UTC a analizar. None = ahora mismo.
     """
     transit_planets = get_planet_positions_at(target_datetime, natal_chart.latitude, natal_chart.longitude)
-    aspects = calculate_transit_aspects(natal_chart, transit_planets)
+    aspects = calculate_transit_aspects(natal_chart, transit_planets, include_angles=True)
 
     # Ordenar por relevancia (planeta lento sobre punto personal y cerca de exacto
     # primero); a igualdad, el más exacto. Ordenar solo por orbe ponía una Luna de

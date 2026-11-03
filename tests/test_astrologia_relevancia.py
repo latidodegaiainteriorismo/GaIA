@@ -39,11 +39,13 @@ def test_los_aspectos_de_los_transitos_llevan_nivel_y_relevancia_y_se_ordenan(mo
     class P:
         def __init__(self, name, lon):
             self.name, self.longitude, self.sign, self.house = name, lon, "Aries", 1
+            self.is_retrograde = False
 
         def to_dict(self):
             return {"name": self.name, "longitude": self.longitude}
 
-    natal = type("C", (), {"planets": [P("sun", 100.0)], "latitude": 0, "longitude": 0})()
+    natal = type("C", (), {"planets": [P("sun", 100.0)], "latitude": 0, "longitude": 0,
+                           "ascendant": None, "midheaven": None, "time_known": True})()
     en_transito = [P("moon", 100.1), P("pluto", 102.0)]   # la Luna está más exacta
     aspectos = transits.calculate_transit_aspects(natal, en_transito)
     assert {a["transit_planet"] for a in aspectos} == {"moon", "pluto"}
@@ -58,8 +60,9 @@ def test_los_aspectos_de_los_transitos_llevan_nivel_y_relevancia_y_se_ordenan(mo
 
 def _contexto(monkeypatch, significativos):
     carta = {
-        "planets": [{"name": "sun", "sign": "Leo", "degree_in_sign": 10, "house": 5}],
-        "ascendant": {"sign": "Tauro", "degree": 3},
+        "planets": [{"name": "sun", "sign": "Leo", "degree_in_sign": 10, "house": 5, "longitude": 130.0}],
+        "ascendant": {"sign": "Tauro", "degree": 3, "absolute_longitude": 33.0},
+        "midheaven": {"sign": "Acuario", "degree": 3, "absolute_longitude": 303.0},
         "aspects": [
             {"planet1": "sun", "planet2": "moon", "aspect_type": "trígono", "orb": 2.0, "exact_angle": 120},
             {"planet1": "neptune", "planet2": "pluto", "aspect_type": "sextil", "orb": 1.0, "exact_angle": 60},

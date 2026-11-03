@@ -34,12 +34,15 @@ def create_birth_chart():
     birth_place   = (data.get('birth_place') or '').strip()
     person_label  = (data.get('person_label') or DEFAULT_PERSON_LABEL).strip()
     relationship  = (data.get('relationship') or '').strip() or None
+    time_known    = not data.get('time_unknown')
+    if not time_known and not birth_time:
+        birth_time = '12:00'   # relleno: la carta se guarda marcada «sin hora»
 
     if not all([birth_date, birth_time, birth_place]):
         return jsonify({'error': 'Faltan datos: birth_date, birth_time y birth_place son obligatorios'}), 400
 
     chart = create_birth_chart_for_user(g.user_id, birth_date, birth_time, birth_place,
-                                        person_label, relationship)
+                                        person_label, relationship, time_known=time_known)
     if not chart:
         return jsonify({'error': 'No se pudo calcular la carta natal. Revisa el lugar de nacimiento e inténtalo de nuevo.'}), 422
 

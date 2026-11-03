@@ -55,7 +55,7 @@ class _Resp:
 
 def test_tras_un_402_no_se_vuelve_a_llamar_a_huggingface_un_rato(monkeypatch):
     llamadas = []
-    monkeypatch.setattr(embeddings, "HUGGINGFACE_API_KEY", "x")
+    monkeypatch.setattr(embeddings, "GEMINI_API_KEY", "x")
     monkeypatch.setattr(embeddings, "_pausado_hasta", 0.0)
     monkeypatch.setattr(embeddings.requests, "post", lambda *a, **k: llamadas.append(1) or _Resp(402))
 
@@ -67,7 +67,7 @@ def test_tras_un_402_no_se_vuelve_a_llamar_a_huggingface_un_rato(monkeypatch):
 
 def test_pasada_la_pausa_se_reintenta(monkeypatch):
     llamadas = []
-    monkeypatch.setattr(embeddings, "HUGGINGFACE_API_KEY", "x")
+    monkeypatch.setattr(embeddings, "GEMINI_API_KEY", "x")
     monkeypatch.setattr(embeddings, "_pausado_hasta", time.monotonic() - 1)
     monkeypatch.setattr(embeddings.requests, "post", lambda *a, **k: llamadas.append(1) or _Resp(402))
     embeddings.embed_text("uno")
@@ -76,7 +76,7 @@ def test_pasada_la_pausa_se_reintenta(monkeypatch):
 
 def test_un_error_pasajero_no_pausa_los_embeddings(monkeypatch):
     llamadas = []
-    monkeypatch.setattr(embeddings, "HUGGINGFACE_API_KEY", "x")
+    monkeypatch.setattr(embeddings, "GEMINI_API_KEY", "x")
     monkeypatch.setattr(embeddings, "_pausado_hasta", 0.0)
     monkeypatch.setattr(embeddings.requests, "post", lambda *a, **k: llamadas.append(1) or _Resp(503))
     embeddings.embed_text("uno")

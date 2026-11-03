@@ -97,8 +97,10 @@ AUDIO_CHUNK_WORDS  = 150   # palabras por chunk de transcript (~45-60s de audio)
 EDGE_TTS_VOICE = os.environ.get('EDGE_TTS_VOICE', 'es-ES-ElviraNeural')
 
 # ── EMBEDDINGS (Fase 1) ───────────────────────────────────────────────────────
-HUGGINGFACE_API_KEY    = os.environ.get('HUGGINGFACE_API_KEY', '')
-HUGGINGFACE_MODEL      = 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'
+# Desde el 3-nov-2026 los embeddings los genera Gemini (misma GEMINI_API_KEY que el chat);
+# HuggingFace se quedó sin créditos. Se piden 384 dimensiones para no cambiar el esquema.
+# OJO: al cambiar de modelo hay que recalcular los vectores guardados (scripts/reembeber.py).
+GEMINI_EMBEDDING_MODEL = os.environ.get('GEMINI_EMBEDDING_MODEL', 'gemini-embedding-001')
 EMBEDDING_DIMENSIONS   = 384
 
 # ── MEMORIA ───────────────────────────────────────────────────────────────────

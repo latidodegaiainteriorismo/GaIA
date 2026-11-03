@@ -13,7 +13,7 @@ GaIA es una app de compañía espiritual con IA, co-creada por Adrián (arquitec
 - Cuenta principal `latidodegaiainteriorismo@gmail.com` cubre GitHub, Render, Vercel, Supabase, ElevenLabs, HuggingFace
 - Flujo de despliegue: commit directo a `main` → auto-deploy en Render. **No hay entorno de staging** — cualquier cambio probado en local antes de hacer push.
 - **Ojo: Render NO lee el `Procfile`**: usa el *Start Command* de su panel (Settings → Build & Deploy). El 3-nov-2026 los registros mostraron `gunicorn/workers/sync.py` y WORKER TIMEOUT a los 30 s, es decir, arrancaba sin `--timeout 120` ni hilos. El comando correcto es `gunicorn app:app --timeout 120 --workers 1 --threads 3` y hay que ponerlo allí; el `Procfile` solo documenta la intención.
-- Voz: Edge TTS tarda ~7 ms/carácter y corre dentro de `/chat`; por eso el audio se limita a 2200 caracteres y a 20 s (`tts.py`). Si se pasa, la respuesta sale sin audio, nunca con error. HuggingFace sin créditos (HTTP 402) pausa los embeddings 30 min (`embeddings.py`).
+- Voz: Edge TTS tarda ~7 ms/carácter y corre dentro de `/chat`; por eso el audio se limita a 2200 caracteres y a 20 s (`tts.py`). Si se pasa, la respuesta sale sin audio, nunca con error. Los embeddings los genera Gemini (`gemini-embedding-001`, 384 dimensiones, misma `GEMINI_API_KEY` que el chat; antes HuggingFace, que se quedó sin créditos el 3-nov-2026). Un 401/402/403 los pausa 30 min y un 429 un minuto (`embeddings.py`). Los vectores de modelos distintos no son comparables: tras cambiar de modelo hay que ejecutar `scripts/reembeber.py` (solo `messages.embedding` se busca por vector).
 - Servidor Flask con **1 worker gunicorn y 3 hilos** (`Procfile`) en plan Free de Render (512 MB): así una respuesta larga (LLM + voz) o la pasada de `/maintenance/consolidate` (UptimeRobot, cada pocos minutos) no bloquean a los demás. `--timeout 120` evita el `CRITICAL WORKER TIMEOUT` ya sufrido en TTS. Si Render empieza a matar el worker por memoria (OOM), bajar `--threads` a 1.
 - `db.py` usa un **pool de conexiones** (psycopg2 `ThreadedConnectionPool`, máx. 8): reutiliza conexiones, descarta las que Supabase cierra por inactividad y reintenta una vez. Las lecturas (`db_all`) van en autocommit y **nunca deben usarse para escribir**.
 - **Pruebas**: `pip install -r requirements.txt pytest && python -m pytest tests` (sin BD ni red). GitHub Actions las ejecuta en cada push (`.github/workflows/tests.yml`); si salen en rojo, no te fíes del despliegue. Al editar desde la web de GitHub, mira que el check quede en verde.
@@ -27,7 +27,7 @@ GaIA es una app de compañía espiritual con IA, co-creada por Adrián (arquitec
 - **Sistema de memoria en 4 fases**: user_synthesis, memoria episódica, búsqueda híbrida FTS+vectorial.
   - `user_synthesis`: consolidación asíncrona vía `/maintenance/consolidate`, pingeado por UptimeRobot.
   - Memoria episódica con expansión de temas vía LLM (`_expand_memory_themes`).
-  - Búsqueda híbrida FTS + vectorial usando embeddings de HuggingFace.
+  - Búsqueda híbrida FTS + vectorial usando embeddings de Gemini.
 - **Router de consultas** (`query_router.py`): catálogo de 14 documentos, Groq interpreta la consulta y devuelve documentos relevantes + keywords expandidas.
 - **RAG**: PostgreSQL FTS con stemming en español + fallback ILIKE. Base de conocimiento: ~6,063 chunks de 18 documentos. Ingesta vía GitHub Actions (`ingest_knowledge.py`).
 - **Audio**: pipeline de conocimiento por voz con Supabase Storage (bucket `gaia-audios`), tablas `audio_files`/`audio_chunks`, blueprint `routes/audio.py`.

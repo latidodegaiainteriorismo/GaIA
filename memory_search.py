@@ -344,7 +344,7 @@ def search_user_memory(user_id: str, message: str, exclude_conv_id: str | None =
 
     fts_results = _fts_search(user_id, all_terms, exclude_conv_id, FTS_CANDIDATES)
 
-    query_vec = embed_text(message)
+    query_vec = embed_text(message, consulta=True)
     vec_results = (
         _vector_search(user_id, query_vec, exclude_conv_id, VEC_CANDIDATES)
         if query_vec else []

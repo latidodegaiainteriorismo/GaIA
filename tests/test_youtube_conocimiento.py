@@ -28,9 +28,19 @@ _spec.loader.exec_module(yt)
     "Las cualidades astrológicas:  Caliente-Frío, Húmedo-Seco.",
     "LIBRA, el otro como espejo. Parte I. Curso introducción a la astrología Humanística",
     "Plutón en aspecto con Marte natal.",
+    # método y jerarquía de lectura
+    "Tránsitos.  Guía para navegantes (primera parte).",
+    "Los tres niveles de expresión en la interpretación de un tránsito o progresión.",
+    "Presentación del curso de síntesis interpretativa de cartas natales.",
 ])
 def test_incluye_contenido_practico(titulo):
     assert yt.clasificar(titulo) == "incluir"
+
+
+def test_priorizar_pone_primero_el_metodo_de_lectura():
+    metodo = yt.prioridad("Tránsitos.  Guía para navegantes (primera parte).")
+    casas = yt.prioridad("Planetas en la casa VI con Juan Carlos Gómez")
+    assert metodo < casas < yt.prioridad("Un vídeo cualquiera")
 
 
 @pytest.mark.parametrize("titulo", [

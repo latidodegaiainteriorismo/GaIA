@@ -7,6 +7,7 @@ Cálculo de tránsitos: compara las posiciones planetarias en un instante dado
 from datetime import datetime, timezone
 from astro_core.birth_chart import calculate_planet_positions, MAJOR_ASPECTS
 from astro_core.models import BirthChart, PlanetPosition, Aspect
+from astro_core.relevancia import nivel_transito, puntuar_transito
 
 
 def get_planet_positions_at(target_datetime: datetime = None, latitude: float = 0.0, longitude: float = 0.0,
@@ -66,6 +67,9 @@ def calculate_transit_aspects(natal_chart: BirthChart, transit_planets: list[Pla
                         "aspect_type": aspect_name,
                         "orb": round(orb, 2),
                         "exact_angle": exact_angle,
+                        "nivel": nivel_transito(t_planet.name),
+                        "relevancia": puntuar_transito(t_planet.name, n_planet.name,
+                                                       aspect_name, orb, transit_orb),
                     })
                     break
     return transit_aspects
@@ -83,8 +87,10 @@ def get_transits_report_for_date(natal_chart: BirthChart, target_datetime: datet
     transit_planets = get_planet_positions_at(target_datetime, natal_chart.latitude, natal_chart.longitude)
     aspects = calculate_transit_aspects(natal_chart, transit_planets)
 
-    # Ordenar por orbe (más exactos primero = más relevantes)
-    aspects.sort(key=lambda a: a["orb"])
+    # Ordenar por relevancia (planeta lento sobre punto personal y cerca de exacto
+    # primero); a igualdad, el más exacto. Ordenar solo por orbe ponía una Luna de
+    # paso por delante de Plutón.
+    aspects.sort(key=lambda a: (-a["relevancia"], a["orb"]))
 
     effective_dt = target_datetime if target_datetime else datetime.now(timezone.utc)
 
@@ -92,7 +98,7 @@ def get_transits_report_for_date(natal_chart: BirthChart, target_datetime: datet
         "calculated_at": effective_dt.isoformat(),
         "transit_positions": [p.to_dict() for p in transit_planets],
         "active_aspects": aspects,
-        "most_significant": aspects[:5] if aspects else [],
+        "most_significant": aspects[:8] if aspects else [],
     }
 
 

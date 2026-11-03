@@ -292,6 +292,50 @@ def is_astrology_related(message: str) -> bool:
     return any(w in msg_lower for w in _ASTROLOGY_TRIGGER_WORDS)
 
 
+_NIVELES_TRANSITO = {
+    "fondo": "Telón de fondo (planetas lentos: marcan el TEMA de esta etapa; es la lectura principal)",
+    "apoyo": "Apoyos (Júpiter, Quirón, Nodos: amplían o matizan el tema de fondo)",
+    "disparador": "Disparadores (planetas rápidos: solo marcan el MOMENTO; nunca son el titular)",
+}
+
+# Esto va dentro del propio bloque de contexto (y no solo en gaia_dna_astrologia.txt)
+# porque el chat normal no carga ese archivo: sin esto, el modelo trataría todos los
+# aspectos como igual de importantes.
+_METODO_DE_LECTURA = (
+    "\n## CÓMO ORDENAR LA LECTURA (jerarquía obligatoria)\n"
+    "- Carta natal: de lo general a lo particular. 1) Sol, Luna y Ascendente (la base). "
+    "2) Planetas personales (Mercurio, Venus, Marte) y la casa/signo donde están. "
+    "3) Aspectos principales de la lista de arriba, en ese orden. 4) Síntesis: UN hilo "
+    "que una lo anterior, no una lista de rasgos sueltos.\n"
+    "- Tránsitos: primero el telón de fondo (planetas lentos sobre puntos personales). "
+    "El resto solo lo matiza o lo fecha. Una Luna, un Sol, un Mercurio o una Venus de paso "
+    "NUNCA se presentan como lo principal ni se equiparan a Plutón, Neptuno, Urano o Saturno, "
+    "aunque su orbe sea más exacto.\n"
+    "- Si el usuario pregunta por un tránsito rápido concreto (p. ej. «la Luna de hoy»), "
+    "respóndelo, pero di que es breve y dónde encaja dentro del telón de fondo.\n"
+    "- Si no hay tránsitos lentos activos sobre puntos personales, dilo claramente en vez de "
+    "inflar los rápidos.\n"
+)
+
+
+def _format_natal_aspects(aspects: list, maximo: int = 8) -> list:
+    """Líneas con los aspectos natales que más pesan (luminares y personales primero)."""
+    from astro_core.birth_chart import MAJOR_ASPECTS
+    from astro_core.relevancia import puntuar_aspecto_natal
+    orbes = {nombre: orbe for nombre, _angulo, orbe in MAJOR_ASPECTS}
+    puntuados = []
+    for a in aspects:
+        orbe_max = orbes.get(a["aspect_type"], 8)
+        puntuados.append((puntuar_aspecto_natal(a["planet1"], a["planet2"], a["aspect_type"],
+                                                a["orb"], orbe_max), a))
+    puntuados.sort(key=lambda x: (-x[0], x[1]["orb"]))
+    return [
+        f"- {_planet_es(a['planet1'])} {a['aspect_type']} {_planet_es(a['planet2'])} "
+        f"(orbe {a['orb']}°)"
+        for _puntos, a in puntuados[:maximo]
+    ]
+
+
 def format_astrology_context(user_id: str, target_date: str = None,
                               person_label: str = DEFAULT_PERSON_LABEL) -> str:
     """
@@ -321,18 +365,28 @@ def format_astrology_context(user_id: str, target_date: str = None,
         lines.append(f"- Ascendente: {chart_dict['ascendant']['sign']} "
                      f"{chart_dict['ascendant']['degree']}°")
 
+    natal_lines = _format_natal_aspects(chart_dict.get("aspects") or [])
+    if natal_lines:
+        lines.append("\n## ASPECTOS NATALES PRINCIPALES (los que más pesan en la carta, de más a menos)")
+        lines.extend(natal_lines)
+
     if transits and transits.get("most_significant"):
-        header = (f"\n## TRÁNSITOS PARA EL {target_date} (aspectos más exactos, ordenados por relevancia)"
-                  if target_date else
-                  "\n## TRÁNSITOS ACTIVOS AHORA MISMO (aspectos más exactos, ordenados por relevancia)")
-        lines.append(header)
-        for t in transits["most_significant"]:
-            tone = _ASPECT_TONE.get(t["aspect_type"], "")
-            lines.append(
-                f"- {_planet_es(t['transit_planet'])} en tránsito ({t['transit_sign']}) "
-                f"en {t['aspect_type']} con {possessive} {_planet_es(t['natal_planet'])} natal "
-                f"({t['natal_sign']}, casa {t['natal_house']}) — orbe {t['orb']}°. {tone}."
-            )
+        lines.append(f"\n## TRÁNSITOS PARA EL {target_date}" if target_date
+                     else "\n## TRÁNSITOS ACTIVOS AHORA MISMO")
+        lines.append("(Agrupados por peso. NO tienen la misma importancia: lo que dura años pesa "
+                     "más que lo que dura horas.)")
+        for nivel in _NIVELES_TRANSITO:
+            grupo = [t for t in transits["most_significant"] if t.get("nivel") == nivel]
+            if not grupo:
+                continue
+            lines.append(f"### {_NIVELES_TRANSITO[nivel]}")
+            for t in grupo:
+                tone = _ASPECT_TONE.get(t["aspect_type"], "")
+                lines.append(
+                    f"- {_planet_es(t['transit_planet'])} en tránsito ({t['transit_sign']}) "
+                    f"en {t['aspect_type']} con {possessive} {_planet_es(t['natal_planet'])} natal "
+                    f"({t['natal_sign']}, casa {t['natal_house']}) — orbe {t['orb']}°. {tone}."
+                )
 
     lines.append(
         "\nUsa estos datos SOLO si el usuario pregunta por esta carta astral, este signo, "
@@ -340,6 +394,7 @@ def format_astrology_context(user_id: str, target_date: str = None,
         "forzada en temas que no lo pidan. Cuando lo uses, interpreta con UNA hipótesis "
         "fuerte, no un catálogo de posibilidades — igual que haces con el resto de tu saber."
     )
+    lines.append(_METODO_DE_LECTURA)
 
     return "\n".join(lines)
 

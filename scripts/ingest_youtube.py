@@ -78,7 +78,8 @@ EXTRA_INCLUIR = re.compile(
 )
 
 # El curso de introducción (Libra, partes I–III) es contenido práctico aunque diga "curso"
-CURSO_PRACTICO = re.compile(r"parte (i|ii|iii)\b.*introduccion a la astrologia|libra, el otro como espejo")
+CURSO_PRACTICO = re.compile(r"parte (i|ii|iii)\b.*introduccion a la astrologia|libra, el otro como espejo|"
+                            r"curso de sintesis interpretativa")
 TRAS_PERIODICO_FUERTE = re.compile(
     r"carta natal|en la carta|casa (i|ii|iii|iv|v|vi|vii|viii|ix|x|xi|xii)\b|en aspecto|aspectos|\bcasas?\b"
 )
@@ -95,6 +96,26 @@ EXCLUIR_SIEMPRE = re.compile(
     # Eventos concretos (conjunciones/cuadraturas de un año): previsión, no lectura de carta
     r"^la (gran )?(conjuncion|cuadratura|oposicion|semicuadratura)\b"
 )
+
+
+# Orden de descarga con --priorizar (0 = primero). El resto conserva su orden.
+_PRIORIDADES = (
+    # Método y jerarquía: cómo ordenar una lectura de carta o de tránsitos
+    re.compile(r"guia para navegantes|tres niveles de expresion|sintesis interpretativa|importancia de los transpersonales|"
+               r"transitos de \w+ (sobre|a los) .*introduccion|introduccion\b.*(transitos|aspectando)|^transitos\b"),
+    re.compile(r"planetas? en (la )?casa|\bel (sol|la luna|mercurio|venus|marte|jupiter|saturno|urano|neptuno|pluton) en (la )?(primera|segunda|tercera|cuarta|quinta|sexta|septima|octava|novena|decima|undecima|duodecima|casa)"),
+    re.compile(r"con juan carlos"),
+    re.compile(r"aspecto|\byod\b|gran cruz|stellium|configuraciones|cuadrada|cualidades|elementos?\b"),
+    re.compile(r"deconstruyendo|unboxing|unboxed|signos?\b|\b(aries|tauro|geminis|cancer|leo|virgo|libra|escorpio|sagitario|capricornio|acuario|piscis)\b"),
+)
+
+
+def prioridad(titulo: str) -> int:
+    t = _norm(titulo)
+    for i, rx in enumerate(_PRIORIDADES):
+        if rx.search(t):
+            return i
+    return len(_PRIORIDADES)
 
 
 def clasificar(titulo: str) -> str:
@@ -202,7 +223,8 @@ def descargar_transcripcion(video_id: str, reintentos: int = 3):
 
 
 def _descargar_con_paciencia(video_id: str, espera_min: int = 20, max_esperas: int = 8):
-    """Si YouTube limita la IP (429), espera y reintenta en vez de rendirse."""
+    """Si YouTube limita la IP (429), espera y reintenta en vez de rendirse.
+    Con max_esperas=0 no espera: lanza Bloqueado enseguida (para cambiar de IP a mano)."""
     for n in range(max_esperas + 1):
         try:
             return descargar_transcripcion(video_id)
@@ -214,7 +236,7 @@ def _descargar_con_paciencia(video_id: str, espera_min: int = 20, max_esperas: i
             time.sleep(espera_min * 60)
 
 
-def obtener_textos(seleccion: list[dict], cache: Path, pausa=(6.0, 12.0)) -> dict:
+def obtener_textos(seleccion: list[dict], cache: Path, pausa=(6.0, 12.0), max_esperas: int = 8) -> dict:
     """Descarga (o lee de la caché) la transcripción de cada vídeo. {id: texto}
     El ritmo es deliberadamente lento: YouTube limita la IP si se le piden muchas seguidas."""
     cache.mkdir(parents=True, exist_ok=True)
@@ -229,7 +251,7 @@ def obtener_textos(seleccion: list[dict], cache: Path, pausa=(6.0, 12.0)) -> dic
             sin_subtitulos += 1
             continue
         try:
-            segs = _descargar_con_paciencia(v["id"])
+            segs = _descargar_con_paciencia(v["id"], max_esperas=max_esperas)
         except ErrorTemporal as e:
             fallos += 1
             print(f"  [{i}/{len(seleccion)}] ⚠️  {v['title'][:50]}: {e} (se reintentará en la próxima ejecución)", flush=True)
@@ -291,6 +313,12 @@ def main():
     ap.add_argument("--guardar", action="store_true", help="descarga lo que falte y guarda en la BD")
     ap.add_argument("--limite", type=int, default=0, help="solo los N primeros (para probar)")
     ap.add_argument("--refrescar", action="store_true", help="vuelve a listar el canal ignorando la caché")
+    ap.add_argument("--pausa", type=float, nargs=2, metavar=("MIN", "MAX"), default=(6.0, 12.0),
+                    help="segundos de pausa entre vídeos (aleatoria entre MIN y MAX)")
+    ap.add_argument("--sin-espera", action="store_true",
+                    help="si YouTube limita la IP, para enseguida en vez de esperar (para cambiar de IP a mano)")
+    ap.add_argument("--priorizar", action="store_true",
+                    help="descarga primero lo más útil: planetas en casas, series con Juan Carlos Gómez, aspectos, signos")
     args = ap.parse_args()
 
     cache = CACHE_RAIZ / _slug(args.autor)
@@ -302,6 +330,8 @@ def main():
     print(f"Canal: {len(videos)} vídeos → incluir {len(grupos['incluir'])} ({horas(grupos['incluir']):.0f} h) | "
           f"periódicos {len(grupos['periodico'])} | otros {len(grupos['otro'])}")
 
+    if args.priorizar:
+        grupos["incluir"].sort(key=lambda v: prioridad(v["title"]))
     seleccion = grupos["incluir"][: args.limite] if args.limite else grupos["incluir"]
     if args.listar:
         for clave in ("incluir", "otro"):
@@ -313,7 +343,8 @@ def main():
         ap.print_help()
         return
 
-    textos = obtener_textos(seleccion, cache)
+    textos = obtener_textos(seleccion, cache, pausa=tuple(args.pausa),
+                            max_esperas=0 if args.sin_espera else 8)
     palabras = sum(len(t.split()) for t in textos.values())
     print(f"✅ {len(textos)} transcripciones disponibles ({palabras:,} palabras ≈ {palabras // CHUNK_WORDS:,} fragmentos)")
     if args.guardar:

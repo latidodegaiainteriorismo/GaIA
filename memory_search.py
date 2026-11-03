@@ -163,7 +163,10 @@ def _expand_memory_themes(message: str) -> list[str]:
             }],
             temperature=0.3,
             max_tokens=200,
-            reasoning_effort="none",
+            # "none" no lo acepta gemini-3.5-flash-lite (HTTP 400 en cada mensaje y la
+            # expansión de temas de memoria no funcionaba nunca); "low" es el valor
+            # que ya usan el router y la clasificación.
+            reasoning_effort="low",
         )
         raw = response.choices[0].message.content.strip()
         raw = raw.replace("```json", "").replace("```", "").strip()

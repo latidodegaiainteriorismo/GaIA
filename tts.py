@@ -22,7 +22,18 @@ logger = logging.getLogger(__name__)
 # (embeddings, consolidación). Con 8000 chars ese riesgo vuelve a existir.
 # Si los workers empiezan a caer de nuevo, la solución de raíz es subir
 # el plan de Render a Starter (2GB RAM, ~$7/mes) en vez de volver a truncar.
-_TTS_MAX_CHARS = 8000
+#
+# AJUSTE (3-nov-2026): bajado a 2200. Edge TTS tarda ~7 ms por carácter (484
+# chars = 1,9 s; 3014 = 20 s; 4827 = >30 s) y la síntesis corre DENTRO de la
+# petición /chat: con 4800 chars el worker de gunicorn superó su límite (30 s
+# por defecto) y se mató, de modo que la persona recibía «Error conectando con
+# GaIA» aunque la respuesta ya estaba generada y guardada. El texto completo
+# se muestra siempre; solo el audio se acorta.
+_TTS_MAX_CHARS = 2200
+
+# Tiempo máximo (s) que se le da a la síntesis. Si se pasa, la respuesta sale
+# sin audio en vez de tumbar la petición entera.
+_TTS_TIMEOUT_SECONDS = 20.0
 
 # Límite específico para fragmentos sueltos (p.ej. "reproducir selección" en
 # el frontend): el usuario selecciona texto a mano, así que no hace falta
@@ -73,7 +84,7 @@ async def _generate(text: str) -> bytes:
     return b''.join(audio_chunks)
 
 
-def text_to_speech(text: str, max_chars: int = _TTS_MAX_CHARS):
+def text_to_speech(text: str, max_chars: int = _TTS_MAX_CHARS, timeout: float = None):
     """
     Convierte texto a audio MP3 en base64.
     Motor: Microsoft Edge TTS (es-ES-ElviraNeural por defecto).
@@ -87,8 +98,12 @@ def text_to_speech(text: str, max_chars: int = _TTS_MAX_CHARS):
     Para fragmentos sueltos (selección de texto en el frontend), pásale
     _TTS_FRAGMENT_MAX_CHARS — ver text_to_speech_fragment() más abajo.
 
+    timeout: segundos máximos para sintetizar (por defecto _TTS_TIMEOUT_SECONDS).
+    Si se agota, devuelve None y el chat responde solo con texto.
+
     Devuelve base64 string o None si falla.
     """
+    timeout = _TTS_TIMEOUT_SECONDS if timeout is None else timeout
     text = (text or '').strip()
     if not text:
         return None
@@ -109,7 +124,11 @@ def text_to_speech(text: str, max_chars: int = _TTS_MAX_CHARS):
         _t0 = time.monotonic()
         loop = asyncio.new_event_loop()
         try:
-            audio_bytes = loop.run_until_complete(_generate(text_clean))
+            audio_bytes = loop.run_until_complete(
+                asyncio.wait_for(_generate(text_clean), timeout=timeout))
+        except asyncio.TimeoutError:
+            logger.error(f'[TTS] ⏱️ Superó {timeout:.0f}s con {len(text_clean)} chars — respuesta sin audio')
+            return None
         finally:
             loop.close()
         _elapsed = time.monotonic() - _t0

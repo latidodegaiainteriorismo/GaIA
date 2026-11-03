@@ -20,6 +20,7 @@ de knowledge_chunks si algun dia hiciera falta cruzar ambos espacios.
 """
 
 import logging
+import time
 import requests
 from config import HUGGINGFACE_API_KEY, HUGGINGFACE_MODEL, EMBEDDING_DIMENSIONS
 
@@ -35,6 +36,14 @@ _EMBED_URL = (
 # degrada solo a FTS) antes que hacer esperar a la persona.
 _TIMEOUT_SECONDS = 8
 
+# Si HuggingFace dice que no hay créditos (402) o rechaza la clave (401/403),
+# insistir solo gasta tiempo: la consolidación hacía 25 llamadas fallidas cada
+# pocos minutos (~10 s con la única petición del worker bloqueada). Se desactiva
+# la llamada un rato y se reintenta después, por si ya se han añadido créditos.
+_PAUSA_TRAS_ERROR_CUENTA_S = 1800
+_codigos_de_cuenta = (401, 402, 403)
+_pausado_hasta = 0.0
+
 
 def embed_text(text: str) -> list[float] | None:
     """
@@ -42,7 +51,10 @@ def embed_text(text: str) -> list[float] | None:
     Devuelve None si falla — quien llame DEBE funcionar igualmente sin
     vector (degradacion elegante a busqueda por texto completo).
     """
+    global _pausado_hasta
     if not HUGGINGFACE_API_KEY or not text or not text.strip():
+        return None
+    if time.monotonic() < _pausado_hasta:
         return None
 
     try:
@@ -54,6 +66,11 @@ def embed_text(text: str) -> list[float] | None:
         )
         if response.status_code != 200:
             logger.warning(f"[embeddings] HTTP {response.status_code}: {response.text[:200]}")
+            if response.status_code in _codigos_de_cuenta:
+                _pausado_hasta = time.monotonic() + _PAUSA_TRAS_ERROR_CUENTA_S
+                logger.error(f"[embeddings] Problema de cuenta con HuggingFace (HTTP "
+                             f"{response.status_code}): sin embeddings durante "
+                             f"{_PAUSA_TRAS_ERROR_CUENTA_S // 60} min")
             return None
 
         vector = response.json()

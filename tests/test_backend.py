@@ -101,7 +101,7 @@ def chat_env(monkeypatch, as_creator):
     monkeypatch.setattr(chat, "extract_and_apply_save_marks", lambda u, t: t)
     monkeypatch.setattr(chat, "extract_new_chart_request", lambda m: None)
     monkeypatch.setattr(chat, "is_astrology_related", lambda m: False)
-    monkeypatch.setattr(chat, "text_to_speech", lambda t: None)
+    monkeypatch.setattr(chat, "text_to_speech", lambda t, **k: None)
     monkeypatch.setattr(chat, "call_groq", llm)
     return rec
 

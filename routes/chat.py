@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 from flask import Blueprint, request, jsonify
 from db import db_all, db_one, db_run
 from auth import get_user_from_token, is_developer, is_creator
@@ -268,6 +269,7 @@ def _extract_sources_used(chunks: list, web_context: str) -> list:
 
 @chat_bp.route('/chat', methods=['POST'])
 def chat():
+    t_inicio = time.monotonic()
     data    = request.get_json() or {}
     message = (data.get('message') or '').strip()
     if not message:
@@ -497,7 +499,11 @@ def chat():
     # ── TTS ──────────────────────────────────────────────────────────────────
     audio_b64 = None
     if voice_mode:
-        audio_b64 = text_to_speech(gaia_text)
+        # Presupuesto de tiempo: la petición entera debe acabar antes del límite del
+        # worker (30 s si Render arranca gunicorn sin --timeout). Lo que ya se haya
+        # gastado generando la respuesta se descuenta del tiempo del audio.
+        gastado = time.monotonic() - t_inicio
+        audio_b64 = text_to_speech(gaia_text, timeout=max(5.0, min(20.0, 26.0 - gastado)))
         if not audio_b64:
             logger.warning('[CHAT] TTS falló — respuesta sin audio')
 

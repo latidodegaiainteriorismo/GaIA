@@ -327,6 +327,12 @@ _METODO_DE_LECTURA = (
     "sensibles: un planeta lento sobre uno de ellos es telón de fondo de primer orden. "
     "℞ = retrógrado (lectura más interna, de revisión). La casa del tránsito («por tu casa N») "
     "dice en qué área de la vida se vive el tema.\n"
+    "- Precisión al hablar: usa «exacto» solo si el orbe es de menos de 0,5°; entre 0,5° y 2° "
+    "di «muy cerca de exacto» y por encima, «activo» o «en orbe». Cita el orbe tal como aparece. "
+    "No des edades ni años de ciclos (retorno de Saturno, oposición de Urano…) salvo que los "
+    "calcules con la fecha de nacimiento y la fecha de hoy que figuran arriba; si dudas, no los des.\n"
+    "- Si Urano, Neptuno, Plutón o Saturno están retrógrados (℞) y son relevantes, dilo: la "
+    "retrogradación cambia el tono de la lectura (más interna, de revisión y de proceso lento).\n"
 )
 
 _SIN_HORA = (

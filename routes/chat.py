@@ -276,6 +276,10 @@ def chat():
         return jsonify({'error': 'Mensaje vacío'}), 400
 
     voice_mode = data.get('voice_mode', True)
+    # audio_aparte: la web pide la voz después, por bloques, con /tts. Así el texto sale
+    # al instante y la respuesta ENTERA se puede escuchar (dentro de /chat el audio tenía
+    # que recortarse a 2200 caracteres para no pasar el límite del worker).
+    audio_aparte = bool(data.get('audio_aparte', False))
     temporary  = data.get('temporary', False)
     conv_id    = data.get('conversation_id')
     token      = request.headers.get('Authorization', '').replace('Bearer ', '')
@@ -498,7 +502,7 @@ def chat():
 
     # ── TTS ──────────────────────────────────────────────────────────────────
     audio_b64 = None
-    if voice_mode:
+    if voice_mode and not audio_aparte:
         # Presupuesto de tiempo: la petición entera debe acabar antes del límite del
         # worker (30 s si Render arranca gunicorn sin --timeout). Lo que ya se haya
         # gastado generando la respuesta se descuenta del tiempo del audio.

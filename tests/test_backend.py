@@ -132,6 +132,19 @@ def test_chat_devuelve_ids_de_mensaje(client, chat_env):
     assert d["user_message_id"] and d["assistant_message_id"]
 
 
+def test_chat_con_audio_aparte_no_sintetiza_la_voz(client, chat_env, monkeypatch):
+    llamadas = []
+    monkeypatch.setattr(chat, "text_to_speech", lambda t, **k: llamadas.append(t) or "AUDIO")
+    base = {"message": "hola", "conversation_id": "C1", "voice_mode": True}
+
+    assert client.post("/chat", headers=H, json=base).get_json()["audio"] == "AUDIO"
+    assert len(llamadas) == 1                        # sin la marca, el audio va en la respuesta (webs antiguas)
+
+    d = client.post("/chat", headers=H, json={**base, "audio_aparte": True}).get_json()
+    assert d["audio"] is None and d["text"] == "respuesta"
+    assert len(llamadas) == 1                        # con la marca no se sintetiza dentro de /chat
+
+
 def test_chat_guarda_la_respuesta_aunque_falle_la_columna_sources(client, chat_env):
     chat_env["fail_sources"] = True
     assert _post_chat(client).get_json()["assistant_message_id"]
